@@ -56,6 +56,8 @@ const icons = {
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
 
+const showMarketplaces = import.meta.env.VITE_SHOW_MARKETPLACES === 'true'
+
 const dashboard = {
     id: 'dashboard',
     title: '',
@@ -102,7 +104,7 @@ const dashboard = {
                     breadcrumbs: true,
                     permission: 'assistants:view'
                 },
-                {
+                ...(showMarketplaces ? [{
                     id: 'marketplaces',
                     title: 'Marketplaces',
                     type: 'item',
@@ -110,7 +112,7 @@ const dashboard = {
                     icon: icons.IconBuildingStore,
                     breadcrumbs: true,
                     permission: 'templates:marketplace,templates:custom'
-                },
+                }] : []),
                 {
                     id: 'tools',
                     title: 'Tools',

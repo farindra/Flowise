@@ -1,122 +1,88 @@
-# editor
-.idea
-.vscode
-
-# dependencies
-**/node_modules
-**/package-lock.json
-!**/examples/package-lock.json
-**/yarn.lock
-
-## logs
-**/logs
-**/*.log
-
-## pnpm
-.pnpm-store/
-
-## build
-**/dist
-**/build
-
-## temp
-**/tmp
-**/temp
-
-## test
-**/coverage
-
-# misc
-.DS_Store
-
-## env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env
-
-## turbo
-.turbo
-
-## secrets
-**/*.key
-**/api.json
-
-## uploads
-**/uploads
-
-## compressed
-**/*.tgz
-
-## vscode
+# ── Editor ────────────────────────────────────────────────────────────────────
+.idea/
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 !.vscode/*.code-snippets
-
-# Local History for Visual Studio Code
 .history/
+.DS_Store
 
-## other keys
+# ── Node / pnpm ───────────────────────────────────────────────────────────────
+**/node_modules/
+**/.pnpm-store/
+**/package-lock.json
+!**/examples/package-lock.json
+**/yarn.lock
+
+# ── Build output ──────────────────────────────────────────────────────────────
+**/dist/
+**/build/
+**/.turbo/
+**/coverage/
+**/tmp/
+**/temp/
+packages/components/nodes/cache/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+**/logs/
+**/*.log
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Certificates & keys ───────────────────────────────────────────────────────
 *.key
+*.key.json
 *.keys
 *.priv
 *.rsa
-*.key.json
-
-## ssh keys
+*.pem
+*.crt
+*.csr
+*.ca
+*.der
+*.p12
+*.kdb
+*.rnd
+*.ssleay
+*.smime
+*.vsix
 *.ssh
 *.ssh-key
 .key-mrc
 
-## Certificate Authority
-*.ca
+# ── Uploads & compressed ──────────────────────────────────────────────────────
+**/uploads/
+**/*.tgz
+**/*.zip
 
-## Certificate
-*.crt
+# ── Nginx proxy cache ─────────────────────────────────────────────────────────
+proxy_cache_dir/
 
-## Certificate Sign Request
-*.csr
+# ── Database & runtime data (bind mounts, never commit) ───────────────────────
+**/*.db
+**/*.sqlite
+services/meilisearch/data/
+services/go-index/data/
+services/trade/data/
 
-## Certificate
-*.der 
+# ── Go compiled binaries ──────────────────────────────────────────────────────
+services/trade/wa-gateway-service/migrate
+services/go-telegram/bin/
+services/go-index/indexer/indexer
 
-## Key database file
-*.kdb
-
-## OSCP request data
-*.org
-
-## PKCS #12
-*.p12
-
-## PEM-encoded certificate data
-*.pem
-
-## Random number seed
-*.rnd
-
-## SSLeay data
-*.ssleay
-
-## S/MIME message
-*.smime
-*.vsix
-
-# =============================================================================
-# Proprietary paths (should never exist in OSS)
-# =============================================================================
-extensions/
-
-# Only allow apps/oss-app, ignore all other apps
-apps/*/
-!apps/oss-app/
-
-# Claude - session/user specific files
+# ── Claude ───────────────────────────────────────────────────────────────────
 .claude/plans/
 .claude/settings.local.json
-.claude/agent-memory/*
+.claude/agent-memory/
+services/trade/.claude/
 
+# ── Flowise proprietary paths ─────────────────────────────────────────────────
+extensions/
+apps/*/
+!apps/oss-app/

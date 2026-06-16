@@ -1,0 +1,99 @@
+# SUPERSEDED — jangan jalankan file ini langsung.
+# Semua service sudah digabung ke services/docker-compose.yml (satu level di atas).
+# File ini disimpan sebagai referensi original ob-bot.
+name: ob-bot
+
+networks:
+  ob-bot-net:
+    driver: bridge
+
+services:
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    container_name: ob-meilisearch
+    restart: unless-stopped
+    env_file:
+      - ./meilisearch/.env
+    volumes:
+      - ./data/meilisearch:/meili_data
+    ports:
+      - "127.0.0.1:7700:7700"
+    networks:
+      - ob-bot-net
+    mem_limit: 1g
+    cpus: 1.0
+
+  product-search-service:
+    build: ./product-search-service
+    container_name: ob-product-search
+    restart: unless-stopped
+    env_file:
+      - ./product-search-service/.env
+    depends_on:
+      - meilisearch
+    ports:
+      - "127.0.0.1:8101:8101"
+    networks:
+      - ob-bot-net
+    mem_limit: 256m
+    cpus: 0.5
+
+  customer-pricing-service:
+    build: ./customer-pricing-service
+    container_name: ob-customer-pricing
+    restart: unless-stopped
+    env_file:
+      - ./customer-pricing-service/.env
+    volumes:
+      - ./data/customer-pricing:/data
+    ports:
+      - "127.0.0.1:8102:8102"
+    networks:
+      - ob-bot-net
+    mem_limit: 256m
+    cpus: 0.5
+
+  ai-vision-service:
+    build: ./ai-vision-service
+    container_name: ob-ai-vision
+    restart: unless-stopped
+    env_file:
+      - ./ai-vision-service/.env
+    ports:
+      - "127.0.0.1:8103:8103"
+    networks:
+      - ob-bot-net
+    mem_limit: 256m
+    cpus: 0.5
+
+  sync-indexer:
+    build: ./sync-indexer
+    container_name: ob-sync-indexer
+    restart: unless-stopped
+    env_file:
+      - ./sync-indexer/.env
+    depends_on:
+      - meilisearch
+    networks:
+      - ob-bot-net
+    mem_limit: 512m
+    cpus: 0.5
+
+  wa-gateway-service:
+    build: ./wa-gateway-service
+    container_name: ob-wa-gateway
+    restart: unless-stopped
+    env_file:
+      - ./wa-gateway-service/.env
+    depends_on:
+      - product-search-service
+      - customer-pricing-service
+      - ai-vision-service
+    volumes:
+      - ./data/wa-session:/data
+    ports:
+      - "127.0.0.1:8100:8100"
+    networks:
+      - ob-bot-net
+    mem_limit: 512m
+    cpus: 1.0

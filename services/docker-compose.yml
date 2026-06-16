@@ -1,0 +1,140 @@
+# ── Networks ──────────────────────────────────────────────────────────────────
+# ob-net: bridge network untuk komunikasi antar ob-bot services (service names)
+# go-index menggunakan network_mode: host (butuh akses MySQL lokal), tidak masuk ob-net
+networks:
+  ob-net:
+    driver: bridge
+
+services:
+
+  # ── Meilisearch (shared: go-index + ob-bot) ───────────────────────────────
+  # Exposed ke host 127.0.0.1:7700 → go-index bisa akses via host network
+  # Di dalam ob-net → ob-bot services pakai service name "meilisearch:7700"
+  # Key: lihat meilisearch/.env (MEILI_MASTER_KEY)
+  meilisearch:
+    build: ./meilisearch
+    container_name: meilisearch
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - ./meilisearch/data:/meili_data
+    env_file: ./meilisearch/.env
+    networks:
+      - ob-net
+    mem_limit: 1g
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── go-index (MySQL PrestaShop → Meilisearch) ────────────────────────────
+  # network_mode: host — akses MySQL lokal + Meilisearch via 127.0.0.1:7700
+  go-index:
+    build:
+      context: ./go-index/indexer
+      dockerfile: Dockerfile
+    container_name: go-index
+    restart: unless-stopped
+    network_mode: host
+    env_file: ./go-index/.env
+    environment:
+      MEILI_URL: "http://127.0.0.1:7700"
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+
+  # ── sync-indexer (Internal API → Meilisearch, trading catalog) ───────────
+  sync-indexer:
+    build: ./trade/sync-indexer
+    container_name: ob-sync-indexer
+    restart: unless-stopped
+    env_file: ./trade/sync-indexer/.env
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+    networks:
+      - ob-net
+    mem_limit: 512m
+    cpus: "0.5"
+
+  # ── product-search-service ────────────────────────────────────────────────
+  product-search-service:
+    build: ./trade/product-search-service
+    container_name: ob-product-search
+    restart: unless-stopped
+    env_file: ./trade/product-search-service/.env
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8101:8101"
+    networks:
+      - ob-net
+    mem_limit: 256m
+    cpus: "0.5"
+
+  # ── customer-pricing-service ──────────────────────────────────────────────
+  customer-pricing-service:
+    build: ./trade/customer-pricing-service
+    container_name: ob-customer-pricing
+    restart: unless-stopped
+    env_file: ./trade/customer-pricing-service/.env
+    volumes:
+      - ./trade/data/customer-pricing:/data
+    ports:
+      - "127.0.0.1:8102:8102"
+    networks:
+      - ob-net
+    mem_limit: 256m
+    cpus: "0.5"
+
+  # ── ai-vision-service ─────────────────────────────────────────────────────
+  ai-vision-service:
+    build: ./trade/ai-vision-service
+    container_name: ob-ai-vision
+    restart: unless-stopped
+    env_file: ./trade/ai-vision-service/.env
+    ports:
+      - "127.0.0.1:8103:8103"
+    networks:
+      - ob-net
+    mem_limit: 256m
+    cpus: "0.5"
+
+  # ── wa-gateway-service (WA bot, whatsmeow) ───────────────────────────────
+  # Data WA session disimpan di trade/data/wa-session/ (bind mount)
+  # Flowise integration: isi FLOWISE_URL + FLOWISE_CHATFLOW_ID di .env setelah siap
+  wa-gateway-service:
+    build: ./trade/wa-gateway-service
+    container_name: ob-wa-gateway
+    restart: unless-stopped
+    env_file: ./trade/wa-gateway-service/.env
+    depends_on:
+      - product-search-service
+      - customer-pricing-service
+      - ai-vision-service
+    volumes:
+      - ./trade/data/wa-session:/data
+    ports:
+      - "127.0.0.1:8100:8100"
+    networks:
+      - ob-net
+    mem_limit: 512m
+    cpus: "1.0"
+
+  # ── go-telegram (Telegram bot) ────────────────────────────────────────────
+  # Dikelola PM2 di host — tidak dijalankan via Docker
+  # Uncomment kalau mau migrasi ke Docker
+  # go-telegram:
+  #   build: ./go-telegram
+  #   container_name: go-telegram
+  #   restart: unless-stopped
+  #   env_file: ./go-telegram/.env
+  #   ports:
+  #     - "127.0.0.1:8081:8081"
+  #   networks:
+  #     - ob-net
