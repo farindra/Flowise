@@ -298,10 +298,11 @@ func (r *Router) handleProductSearch(ctx context.Context, evt *events.Message, q
 			customerName = c.Nama
 		}
 
-		// Try Flowise first — it can convert specs to bearing codes, suggest alternatives, etc.
+		// Try Flowise — tell it the search was empty so it searches by bearing code instead of asking questions.
 		var history []string
 		_, _ = r.store.Get(phone, "conversationHistory", &history)
-		if aiMsg := r.generateNatural(ctx, query, phone, customerName, history, false, false); aiMsg != "" {
+		flowiseCtx := fmt.Sprintf("[Pencarian '%s' tidak ditemukan di katalog. Gunakan pengetahuanmu untuk menentukan kode bearing yang tepat, lalu langsung cari via tool ob_product_search.] %s", strings.Join(queries, ", "), query)
+		if aiMsg := r.generateNatural(ctx, flowiseCtx, phone, customerName, history, false, false); aiMsg != "" {
 			r.reply(ctx, evt, aiMsg)
 			return r.store.AddToHistory(phone, "assistant", aiMsg)
 		}
