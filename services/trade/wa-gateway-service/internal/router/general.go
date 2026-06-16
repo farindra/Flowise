@@ -213,6 +213,20 @@ func (r *Router) handleGeneralMessage(ctx context.Context, evt *events.Message, 
 
 		// Number selection from last search results.
 		if ac.LastResults != nil && len(ac.LastResults) > 0 {
+			// Natural question (not a code/brand/number) → Flowise, skip number-selection.
+			if !hasProductCode && !hasBrand {
+				var history []string
+				_, _ = r.store.Get(phone, "conversationHistory", &history)
+				name := ""
+				if c, err := r.cache.GetCustomerInfo(ctx, phone); err == nil && c != nil {
+					name = c.Nama
+				}
+				if aiMsg := r.generateNatural(ctx, messageBody, phone, name, history, false, false); aiMsg != "" {
+					r.reply(ctx, evt, aiMsg)
+					return r.store.AddToHistory(phone, "assistant", aiMsg)
+				}
+			}
+
 			handled, err := r.handleNumberSelection(ctx, evt, trimmed)
 			if err != nil {
 				return err

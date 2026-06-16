@@ -298,33 +298,17 @@ func (r *Router) handleProductSearch(ctx context.Context, evt *events.Message, q
 			customerName = c.Nama
 		}
 
-		queryStr := strings.Join(queries, ", ")
-		isBearingSearch := false
-		bearingKwRe := regexp.MustCompile(`\b(bearing|laher)\b`)
-		digitRe := regexp.MustCompile(`\d`)
-		brandRe := regexp.MustCompile(`(?i)\b(skf|nsk|fag|ntn|koyo|timken|ina|nachi|fbj|asahi|thk|iko)\b`)
-		for _, q := range queries {
-			ql := strings.ToLower(strings.TrimSpace(q))
-			words := strings.Fields(ql)
-			if bearingKwRe.MatchString(ql) && len(words) <= 2 &&
-				!digitRe.MatchString(ql) && !brandRe.MatchString(ql) {
-				isBearingSearch = true
-				break
-			}
+		// Try Flowise first — it can convert specs to bearing codes, suggest alternatives, etc.
+		var history []string
+		_, _ = r.store.Get(phone, "conversationHistory", &history)
+		if aiMsg := r.generateNatural(ctx, query, phone, customerName, history, false, false); aiMsg != "" {
+			r.reply(ctx, evt, aiMsg)
+			return r.store.AddToHistory(phone, "assistant", aiMsg)
 		}
 
-		var response string
-		if isBearingSearch {
-			response = "🔍 Saya siap membantu Anda mencari bearing yang tepat.\n\n" +
-				"Untuk pencarian yang lebih akurat, mohon sertakan:\n" +
-				"• Kode produk (contoh: bearing 6205)\n" +
-				"• Pencarian Merk spesifik menggunakan tanda ^ (contoh: ^ SKF)\n" +
-				"• Spesifikasi lengkap (contoh: bearing 6205 2RS)\n" +
-				"• Upload foto berisi list kode bearing juga bisa\n\n" +
-				"Atau ketik */help* untuk panduan lengkap."
-		} else {
-			response = fmt.Sprintf("😔 Maaf %s, produk \"%s\" tidak ditemukan.\n\nSilakan coba:\n• Gunakan kata kunci yang lebih umum\n• Periksa ejaan kode produk\n• Coba cari dengan nama produk lain\n\nAtau ketik \"bantuan\" untuk berbicara dengan tim marketing kami.", customerName, queryStr)
-		}
+		// Flowise unavailable — fall back to hardcoded response.
+		queryStr := strings.Join(queries, ", ")
+		response := fmt.Sprintf("😔 Maaf %s, produk \"%s\" tidak ditemukan di katalog kami.\n\nSilakan coba:\n• Gunakan kode lengkap (contoh: 6205 2RS, UCP204)\n• Sertakan brand (contoh: SKF 6205)\n• Coba spesifikasi teknis (contoh: poros 35mm)\n\nAtau ketik \"bantuan\" untuk langsung bicara dengan tim marketing kami.", customerName, queryStr)
 		r.reply(ctx, evt, response)
 		return r.store.AddToHistory(phone, "assistant", response)
 	}
