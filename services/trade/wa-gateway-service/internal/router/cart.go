@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"go.mau.fi/whatsmeow/types/events"
 
@@ -227,4 +228,78 @@ func (r *Router) handleRemoveFromCart(ctx context.Context, evt *events.Message, 
 		removed.Kode, removed.Nama, afterMsg)
 	r.reply(ctx, evt, response)
 	return r.store.AddToHistory(phone, "assistant", response)
+}
+
+// handleDirectOrderRequest handles "pesan [kode]" intent: searches for an exact
+// product, shows price/stock, and asks for quantity before adding to cart.
+// Falls back to handleGeneralMessage if the product is ambiguous.
+func (r *Router) handleDirectOrderRequest(ctx context.Context, evt *events.Message, productCode string) error {
+	phone := evt.Info.Sender.User
+
+	results, err := r.search.Search(ctx, productCode, 10)
+	if err != nil || len(results) == 0 {
+		return r.handleGeneralMessage(ctx, evt, productCode)
+	}
+
+	// Exact kode match → use it; otherwise fall through to search (ambiguous).
+	var product *client.Product
+	codeUpper := strings.ToUpper(strings.TrimSpace(productCode))
+	for _, p := range results {
+		if strings.ToUpper(strings.TrimSpace(p.Kode)) == codeUpper {
+			p2 := p
+			product = &p2
+			break
+		}
+	}
+	if product == nil {
+		if len(results) > 1 {
+			// Multiple results, no exact match — show search list instead.
+			return r.handleGeneralMessage(ctx, evt, productCode)
+		}
+		p2 := results[0]
+		product = &p2
+	}
+
+	finalPrice, priceErr := r.cache.GetCustomerPrice(ctx, *product, phone)
+	if priceErr != nil {
+		finalPrice = float64(product.HargaNum.NonCustomer)
+	}
+
+	customer, _ := r.cache.GetCustomerInfo(ctx, phone)
+	isCustomer := customer != nil && customer.Nama != ""
+
+	r.mu.Lock()
+	if r.activeConvs[phone] == nil {
+		r.activeConvs[phone] = &ActiveConv{}
+	}
+	r.activeConvs[phone].Active = true
+	r.activeConvs[phone].State = "AWAITING_QTY_DIRECT"
+	r.activeConvs[phone].Context = "product_search"
+	r.activeConvs[phone].LastResults = []client.Product{*product}
+	r.activeConvs[phone].LastMessageTime = nowMs()
+	r.mu.Unlock()
+
+	stokStr := fmt.Sprintf("%d unit tersedia", product.Stok)
+	if product.Stok <= 0 {
+		stokStr = "Habis / Indent"
+	}
+
+	msg := fmt.Sprintf(
+		"✅ *Produk Ditemukan*\n\n"+
+			"*Kode* : %s\n"+
+			"*Nama* : %s\n"+
+			"*Brand*: %s\n"+
+			"*Stok* : %s\n"+
+			"*Harga*: %s",
+		product.Kode, product.Nama, product.Brand, stokStr,
+		shared.FormatCurrency(finalPrice))
+
+	if !isCustomer {
+		msg += "\n\n⚠️ Anda belum terdaftar sebagai customer resmi — harga di atas adalah harga non-customer. Hubungi marketing untuk daftar dan dapatkan *harga B2B yang lebih baik*."
+	}
+
+	msg += "\n\n*Berapa qty yang Anda inginkan?* (ketik angka, contoh: 5)"
+
+	r.reply(ctx, evt, msg)
+	return r.store.AddToHistory(phone, "assistant", msg)
 }

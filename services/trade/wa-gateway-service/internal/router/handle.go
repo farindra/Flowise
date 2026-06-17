@@ -173,12 +173,16 @@ func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, bod
 		return r.handleGreeting(ctx, evt, "")
 	}
 
-	// Products detected by AI → route to product search.
+	// Products detected by AI → route to product search or direct-order flow.
 	if len(aiProducts) > 0 {
 		_ = aiQuantity // used in 3g
 		searchQuery := strings.Join(aiProducts, ", ")
 		if len(aiProducts) == 1 {
 			searchQuery = aiProducts[0]
+		}
+		// "order" intent with single product → try direct order/cart flow first.
+		if intent == "order" && len(aiProducts) == 1 {
+			return r.handleDirectOrderRequest(ctx, evt, searchQuery)
 		}
 		return r.handleGeneralMessage(ctx, evt, searchQuery)
 	}

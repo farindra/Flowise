@@ -127,6 +127,32 @@ func (r *Router) handleGeneralMessage(ctx context.Context, evt *events.Message, 
 		}
 
 		switch ac.State {
+		case "AWAITING_QTY_DIRECT":
+			trimmedBody := strings.TrimSpace(messageBody)
+			match := regexp.MustCompile(`^\d+`).FindString(trimmedBody)
+			if match == "" {
+				msg := "Masukkan jumlah yang valid ya (contoh: 5, 10, 100) 😊"
+				r.reply(ctx, evt, msg)
+				return r.store.AddToHistory(phone, "assistant", msg)
+			}
+			qty, _ := strconv.Atoi(match)
+			if qty <= 0 {
+				msg := "Jumlah harus lebih dari 0 ya 😊"
+				r.reply(ctx, evt, msg)
+				return r.store.AddToHistory(phone, "assistant", msg)
+			}
+			r.mu.Lock()
+			ac2 := r.activeConvs[phone]
+			r.mu.Unlock()
+			if ac2 == nil || len(ac2.LastResults) == 0 {
+				return r.handleGeneralMessage(ctx, evt, messageBody)
+			}
+			product := ac2.LastResults[0]
+			r.mu.Lock()
+			r.activeConvs[phone].State = ""
+			r.mu.Unlock()
+			return r.handleAddToCart(ctx, evt, product, qty)
+
 		case "ASK_COMPANY_NAME_CHECKOUT":
 			return r.handleCompanyNameInput(ctx, evt, messageBody)
 		case "ASK_REGION_CHECKOUT":
