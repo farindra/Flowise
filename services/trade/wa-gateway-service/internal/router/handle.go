@@ -183,14 +183,10 @@ func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, bod
 		return r.handleGeneralMessage(ctx, evt, searchQuery)
 	}
 
-	// AI found price/stock/order intent but no product code — try regex fallback.
+	// AI found price/stock/order intent but no product code — route to general handler
+	// which will call handleProductSearch → Flowise fallback for natural queries.
 	if intent == "price_check" || intent == "stock_check" || intent == "order" {
-		if fallbackProductCodeRe.MatchString(body) {
-			return r.handleGeneralMessage(ctx, evt, body)
-		}
-		msg := "Boleh sebutkan kode produk atau bearing yang dimaksud? Supaya saya bisa bantu cek stok dan harganya dengan akurat. 😊"
-		r.reply(ctx, evt, msg)
-		return r.store.AddToHistory(phone, "assistant", msg)
+		return r.handleGeneralMessage(ctx, evt, body)
 	}
 
 	// Negation words check.
