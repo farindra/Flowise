@@ -7,7 +7,9 @@ package router
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -51,6 +53,8 @@ type Router struct {
 	flowise *client.FlowiseClient // optional; nil = use Gemini only
 	search  *client.ProductSearchClient
 
+	catalogExportURL string // product-search-service /export/csv endpoint
+
 	notif            *notification.Notifier
 	marketingNumbers []string
 
@@ -63,8 +67,9 @@ type Router struct {
 }
 
 // New creates a Router. flowise may be nil — if nil, natural chat falls back
-// to ai-vision-service's Gemini endpoint.
-func New(wa *whatsmeow.Client, store *state.Store, cache *state.CustomerCache, ai *client.AIVisionClient, flowise *client.FlowiseClient, search *client.ProductSearchClient) *Router {
+// to ai-vision-service's Gemini endpoint. searchBaseURL is the base URL of
+// product-search-service (e.g. "http://product-search-service:8101").
+func New(wa *whatsmeow.Client, store *state.Store, cache *state.CustomerCache, ai *client.AIVisionClient, flowise *client.FlowiseClient, search *client.ProductSearchClient, searchBaseURL string) *Router {
 	return &Router{
 		wa:               wa,
 		store:            store,
@@ -72,6 +77,7 @@ func New(wa *whatsmeow.Client, store *state.Store, cache *state.CustomerCache, a
 		ai:               ai,
 		flowise:          flowise,
 		search:           search,
+		catalogExportURL: searchBaseURL + "/export/csv",
 		notif:            notification.NewNotifier(wa),
 		marketingNumbers: notification.GetAllMarketingNumbers(),
 		lastMsgTime:      make(map[string]int64),
@@ -195,6 +201,46 @@ func (r *Router) reply(ctx context.Context, evt *events.Message, text string) {
 	if _, err := r.wa.SendMessage(ctx, evt.Info.Chat, msg); err != nil {
 		log.Printf("SendMessage to %s error: %v", evt.Info.Chat, err)
 	}
+}
+
+// replyDocument uploads data as a file attachment and sends it to the chat.
+func (r *Router) replyDocument(ctx context.Context, evt *events.Message, data []byte, filename, mimetype string) error {
+	uploaded, err := r.wa.Upload(ctx, data, whatsmeow.MediaDocument)
+	if err != nil {
+		return fmt.Errorf("upload document: %w", err)
+	}
+	msg := &waE2E.Message{
+		DocumentMessage: &waE2E.DocumentMessage{
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(data))),
+			Mimetype:      proto.String(mimetype),
+			FileName:      proto.String(filename),
+		},
+	}
+	if _, err := r.wa.SendMessage(ctx, evt.Info.Chat, msg); err != nil {
+		return fmt.Errorf("send document: %w", err)
+	}
+	return nil
+}
+
+// fetchURL downloads bytes from a URL using a 60s timeout.
+func fetchURL(ctx context.Context, url string) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
 // isMarketingNumber checks if phone is in the marketing numbers list.

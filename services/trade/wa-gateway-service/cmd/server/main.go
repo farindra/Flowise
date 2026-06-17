@@ -109,7 +109,7 @@ func main() {
 		log.Fatalf("failed to init whatsmeow client: %v", err)
 	}
 
-	r := router.New(wa.WA, store, cache, aiClient, flowiseClient, searchClient)
+	r := router.New(wa.WA, store, cache, aiClient, flowiseClient, searchClient, searchURL)
 	wa.SetEventHandler(r.HandleEvent)
 
 	go func() {

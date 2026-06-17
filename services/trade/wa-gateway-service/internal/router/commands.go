@@ -35,6 +35,8 @@ func (r *Router) handleCommand(ctx context.Context, evt *events.Message, command
 		return r.handleMarketingCommand(ctx, evt)
 	case "/reset":
 		return r.handleResetCommand(ctx, evt)
+	case "/katalog":
+		return r.handleKatalogCommand(ctx, evt)
 	default:
 		msg := "❌ Perintah tidak dikenal. Ketik \"bantuan\" untuk mendapatkan bantuan dari tim marketing kami."
 		r.reply(ctx, evt, msg)
@@ -78,6 +80,7 @@ Halo %s, berikut adalah cara menggunakan layanan kami:
 • /help - Tampilkan bantuan
 • /status - Cek status akun
 • /cart - Lihat keranjang belanja
+• /katalog - Download katalog produk lengkap (CSV)
 • /marketing - Lihat daftar marketing
 • Ketik "bantuan" untuk menghubungi tim marketing
 
@@ -229,6 +232,33 @@ func formatPhoneDisplay(nomor string) string {
 		return "0" + nomor[2:]
 	}
 	return nomor
+}
+
+// handleKatalogCommand sends the full product catalog as a CSV file.
+func (r *Router) handleKatalogCommand(ctx context.Context, evt *events.Message) error {
+	phone := evt.Info.Sender.User
+
+	r.reply(ctx, evt, "⏳ Sedang menyiapkan katalog produk (36rb+ item)... mohon tunggu sebentar.")
+
+	data, err := fetchURL(ctx, r.catalogExportURL)
+	if err != nil {
+		log.Printf("handleKatalogCommand: fetch catalog error for %s: %v", phone, err)
+		msg := "❌ Gagal mengambil katalog. Silakan coba lagi."
+		r.reply(ctx, evt, msg)
+		return r.store.AddToHistory(phone, "assistant", msg)
+	}
+
+	filename := fmt.Sprintf("katalog-ob-trade-%s.csv", time.Now().Format("2006-01-02"))
+	if err := r.replyDocument(ctx, evt, data, filename, "text/csv"); err != nil {
+		log.Printf("handleKatalogCommand: send document error for %s: %v", phone, err)
+		msg := "❌ Gagal mengirim file katalog. Silakan coba lagi."
+		r.reply(ctx, evt, msg)
+		return r.store.AddToHistory(phone, "assistant", msg)
+	}
+
+	msg := "✅ Katalog produk Ocean Bearings berhasil dikirim!\n\n📊 File berisi seluruh produk dengan harga.\n⚠️ *Catatan:* Harga di katalog adalah harga umum. Untuk harga customer/khusus, silakan hubungi marketing kami."
+	r.reply(ctx, evt, msg)
+	return r.store.AddToHistory(phone, "assistant", msg)
 }
 
 // createdAtDisplay formats a creation timestamp string for display.
