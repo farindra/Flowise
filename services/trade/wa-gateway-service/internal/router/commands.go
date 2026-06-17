@@ -235,30 +235,39 @@ func formatPhoneDisplay(nomor string) string {
 }
 
 // handleKatalogCommand sends the full product catalog as a CSV file.
+// The fetch + upload is done in a goroutine so the message queue is not blocked.
 func (r *Router) handleKatalogCommand(ctx context.Context, evt *events.Message) error {
 	phone := evt.Info.Sender.User
 
 	r.reply(ctx, evt, "⏳ Sedang menyiapkan katalog produk (36rb+ item)... mohon tunggu sebentar.")
 
-	data, err := fetchURL(ctx, r.catalogExportURL)
-	if err != nil {
-		log.Printf("handleKatalogCommand: fetch catalog error for %s: %v", phone, err)
-		msg := "❌ Gagal mengambil katalog. Silakan coba lagi."
-		r.reply(ctx, evt, msg)
-		return r.store.AddToHistory(phone, "assistant", msg)
-	}
+	go func() {
+		bgCtx := context.Background()
 
-	filename := fmt.Sprintf("katalog-ob-trade-%s.csv", time.Now().Format("2006-01-02"))
-	if err := r.replyDocument(ctx, evt, data, filename, "text/csv"); err != nil {
-		log.Printf("handleKatalogCommand: send document error for %s: %v", phone, err)
-		msg := "❌ Gagal mengirim file katalog. Silakan coba lagi."
-		r.reply(ctx, evt, msg)
-		return r.store.AddToHistory(phone, "assistant", msg)
-	}
+		data, err := fetchURL(bgCtx, r.catalogExportURL)
+		if err != nil {
+			log.Printf("handleKatalogCommand: fetch catalog error for %s: %v", phone, err)
+			msg := "❌ Gagal mengambil katalog. Silakan coba lagi."
+			r.reply(bgCtx, evt, msg)
+			_ = r.store.AddToHistory(phone, "assistant", msg)
+			return
+		}
 
-	msg := "✅ Katalog produk Ocean Bearings berhasil dikirim!\n\n📊 File berisi seluruh produk dengan harga.\n⚠️ *Catatan:* Harga di katalog adalah harga umum. Untuk harga customer/khusus, silakan hubungi marketing kami."
-	r.reply(ctx, evt, msg)
-	return r.store.AddToHistory(phone, "assistant", msg)
+		filename := fmt.Sprintf("katalog-ob-trade-%s.csv", time.Now().Format("2006-01-02"))
+		if err := r.replyDocument(bgCtx, evt, data, filename, "text/csv"); err != nil {
+			log.Printf("handleKatalogCommand: send document error for %s: %v", phone, err)
+			msg := "❌ Gagal mengirim file katalog. Silakan coba lagi."
+			r.reply(bgCtx, evt, msg)
+			_ = r.store.AddToHistory(phone, "assistant", msg)
+			return
+		}
+
+		msg := "✅ Katalog produk Ocean Bearings berhasil dikirim!\n\n📊 File berisi seluruh produk dengan harga.\n⚠️ *Catatan:* Harga di katalog adalah harga umum. Untuk harga customer/khusus, silakan hubungi marketing kami."
+		r.reply(bgCtx, evt, msg)
+		_ = r.store.AddToHistory(phone, "assistant", msg)
+	}()
+
+	return nil
 }
 
 // createdAtDisplay formats a creation timestamp string for display.
