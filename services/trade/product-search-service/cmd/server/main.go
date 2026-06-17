@@ -31,6 +31,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.Health)
 	mux.HandleFunc("/search", h.Search)
+	mux.HandleFunc("/export/csv", h.ExportCSV)
 
 	log.Printf("%s listening on :%s", name, port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))

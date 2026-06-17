@@ -4,6 +4,7 @@ package meili
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -59,6 +60,29 @@ func (c *Client) search(ctx context.Context, query, filter string, limit int64) 
 		return nil, fmt.Errorf("decode search hits: %w", err)
 	}
 	return docs, nil
+}
+
+// AllDocs returns a page of documents from the products index without
+// any search query or filter. Use Offset/Limit for pagination.
+// Returns the page docs and the total document count in the index.
+func (c *Client) AllDocs(ctx context.Context, offset, limit int64) ([]model.Doc, int64, error) {
+	var res meilisearch.DocumentsResult
+	if err := c.sm.Index(IndexUID).GetDocumentsWithContext(ctx, &meilisearch.DocumentsQuery{
+		Offset: offset,
+		Limit:  limit,
+	}, &res); err != nil {
+		return nil, 0, err
+	}
+
+	raw, err := json.Marshal(res.Results)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal docs: %w", err)
+	}
+	var docs []model.Doc
+	if err := json.Unmarshal(raw, &docs); err != nil {
+		return nil, 0, fmt.Errorf("decode docs: %w", err)
+	}
+	return docs, res.Total, nil
 }
 
 // quoteFilterValue quotes a string for use in a Meilisearch filter

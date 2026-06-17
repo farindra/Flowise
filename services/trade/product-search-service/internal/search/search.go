@@ -75,3 +75,23 @@ func (s *Service) Search(ctx context.Context, q string, limit int) ([]model.Prod
 
 	return results, nil
 }
+
+const exportPageSize = 1000
+
+// AllProducts fetches every document in the products index (paginated) for CSV export.
+func (s *Service) AllProducts(ctx context.Context) ([]model.Doc, error) {
+	var all []model.Doc
+	var offset int64
+	for {
+		page, total, err := s.meili.AllDocs(ctx, offset, exportPageSize)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		offset += exportPageSize
+		if offset >= total || len(page) == 0 {
+			break
+		}
+	}
+	return all, nil
+}

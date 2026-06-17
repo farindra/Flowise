@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"product-search-service/internal/search"
 )
@@ -70,4 +73,44 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"products": results,
 	})
+}
+
+// ExportCSV - GET /export/csv
+// Streams the full product catalog as a UTF-8 CSV file (BOM-prefixed for Excel).
+func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
+	docs, err := h.search.AllProducts(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	filename := fmt.Sprintf("katalog-ob-trade-%s.csv", time.Now().Format("2006-01-02"))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
+	// UTF-8 BOM so Excel opens it correctly.
+	w.Write([]byte("\xEF\xBB\xBF")) //nolint:errcheck
+
+	cw := csv.NewWriter(w)
+	cw.Write([]string{"Kode", "Nama", "Brand", "Stok", "Harga Normal", "Harga Customer", "Harga Non-Customer", "Harga Cash", "Tersedia", "Last Updated"}) //nolint:errcheck
+
+	for _, d := range docs {
+		tersedia := "Ya"
+		if !d.Available {
+			tersedia = "Tidak"
+		}
+		cw.Write([]string{ //nolint:errcheck
+			d.Kode,
+			d.Nama,
+			d.Brand,
+			strconv.FormatInt(d.Stok, 10),
+			d.HargaNormal,
+			d.HargaCustomer,
+			d.HargaNonCustomer,
+			d.HargaCash,
+			tersedia,
+			d.LastUpdated,
+		})
+	}
+	cw.Flush()
 }
