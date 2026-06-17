@@ -173,16 +173,21 @@ func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, bod
 		return r.handleGreeting(ctx, evt, "")
 	}
 
+	// "order" intent: extract product code directly from message body.
+	// AI often splits product codes with spaces (e.g. "6205 ZZ (KOREA).FAG" →
+	// ["6205","ZZ","FAG"]), so body extraction is more reliable than aiProducts.
+	if intent == "order" {
+		if code := extractOrderCode(body); code != "" {
+			return r.handleDirectOrderRequest(ctx, evt, code)
+		}
+	}
+
 	// Products detected by AI → route to product search or direct-order flow.
 	if len(aiProducts) > 0 {
 		_ = aiQuantity // used in 3g
 		searchQuery := strings.Join(aiProducts, ", ")
 		if len(aiProducts) == 1 {
 			searchQuery = aiProducts[0]
-		}
-		// "order" intent with single product → try direct order/cart flow first.
-		if intent == "order" && len(aiProducts) == 1 {
-			return r.handleDirectOrderRequest(ctx, evt, searchQuery)
 		}
 		return r.handleGeneralMessage(ctx, evt, searchQuery)
 	}
@@ -211,4 +216,29 @@ func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, bod
 
 	// General message with AI-enhanced query.
 	return r.handleGeneralMessage(ctx, evt, enhancedQuery)
+}
+
+// extractOrderCode strips common Indonesian order trigger words from the body
+// and returns the remainder as the product code. Returns "" if nothing useful
+// remains. Handles cases like "gw pesan 6205 ZZ (KOREA).FAG" → "6205 ZZ (KOREA).FAG".
+func extractOrderCode(body string) string {
+	lower := strings.ToLower(body)
+	triggers := []string{
+		"tolong pesan", "mau pesan", "saya pesan", "aku pesan",
+		"gw pesan", "gue pesan", "sy pesan",
+		"tolong order", "mau order", "saya order", "aku order",
+		"gw order", "gue order",
+		"tolong beli", "mau beli", "saya beli", "aku beli",
+		"gw beli", "gue beli",
+		"pesan", "order", "beli",
+	}
+	for _, t := range triggers {
+		if idx := strings.Index(lower, t); idx != -1 {
+			after := strings.TrimSpace(body[idx+len(t):])
+			if after != "" {
+				return after
+			}
+		}
+	}
+	return ""
 }
