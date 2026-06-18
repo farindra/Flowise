@@ -37,6 +37,8 @@ func (r *Router) handleCommand(ctx context.Context, evt *events.Message, command
 		return r.handleResetCommand(ctx, evt)
 	case "/katalog":
 		return r.handleKatalogCommand(ctx, evt)
+	case "/owner":
+		return r.handleOwnerCommand(ctx, evt, parts)
 	default:
 		msg := "❌ Perintah tidak dikenal. Ketik \"bantuan\" untuk mendapatkan bantuan dari tim marketing kami."
 		r.reply(ctx, evt, msg)
@@ -81,6 +83,7 @@ Halo %s, berikut adalah cara menggunakan layanan kami:
 • /status - Cek status akun
 • /cart - Lihat keranjang belanja
 • /katalog - Download katalog produk lengkap (CSV)
+• /owner [query] - Owner Assistant (khusus owner)
 • /marketing - Lihat daftar marketing
 • Ketik "bantuan" untuk menghubungi tim marketing
 
@@ -232,6 +235,50 @@ func formatPhoneDisplay(nomor string) string {
 		return "0" + nomor[2:]
 	}
 	return nomor
+}
+
+// handleOwnerCommand routes the owner to the Owner Assistant Flowise chatflow.
+// Usage: /owner [query] — if query is provided, send immediately; otherwise show help.
+// Only accessible by phones listed in OWNER_PHONES env var.
+func (r *Router) handleOwnerCommand(ctx context.Context, evt *events.Message, parts []string) error {
+	phone := evt.Info.Sender.User
+
+	if !r.ownerPhones[phone] {
+		msg := "❌ Fitur ini hanya tersedia untuk owner Ocean Bearings."
+		r.reply(ctx, evt, msg)
+		return r.store.AddToHistory(phone, "assistant", msg)
+	}
+
+	if r.ownerFlowise == nil {
+		msg := "⚠️ Owner Assistant belum dikonfigurasi. Hubungi admin untuk setup OWNER_CHATFLOW_ID."
+		r.reply(ctx, evt, msg)
+		return r.store.AddToHistory(phone, "assistant", msg)
+	}
+
+	query := strings.TrimSpace(strings.TrimPrefix(strings.Join(parts, " "), "/owner"))
+	if query == "" {
+		msg := "👋 *Owner Assistant aktif*\n\nKamu bisa tanya langsung, contoh:\n" +
+			"• `/owner stok kosong apa aja?`\n" +
+			"• `/owner harga supplier FAG terbaru`\n" +
+			"• `/owner ringkasan perdagangan bulan ini`\n" +
+			"• `/owner buat draft P.O. untuk stok kosong FAG`\n\n" +
+			"Atau kirim pertanyaan langsung — nomor ini sudah terdaftar sebagai owner."
+		r.reply(ctx, evt, msg)
+		return r.store.AddToHistory(phone, "assistant", msg)
+	}
+
+	r.reply(ctx, evt, "⏳ Memproses permintaan owner...")
+
+	go func() {
+		bgCtx := context.Background()
+		answer := r.ownerFlowise.AskDirect(bgCtx, query, "owner-wa-"+phone)
+		if answer == "" {
+			answer = "❌ Owner Assistant tidak merespons. Coba lagi."
+		}
+		r.reply(bgCtx, evt, answer)
+		_ = r.store.AddToHistory(phone, "assistant", answer)
+	}()
+	return nil
 }
 
 // handleKatalogCommand sends the full product catalog as a CSV file.

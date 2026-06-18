@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"wa-gateway-service/internal/client"
@@ -89,17 +90,30 @@ func main() {
 	searchClient := client.NewProductSearchClient(searchURL)
 
 	// Flowise integration (Phase 7) — optional.
-	// If FLOWISE_URL and FLOWISE_CHATFLOW_ID are both set, Flowise handles
-	// natural conversation (greeting + free-form chat); otherwise falls back
-	// to ai-vision-service Gemini endpoint.
 	var flowiseClient *client.FlowiseClient
 	flowiseURL := os.Getenv("FLOWISE_URL")
 	flowiseChatflowID := os.Getenv("FLOWISE_CHATFLOW_ID")
+	flowiseAPIKey := os.Getenv("FLOWISE_API_KEY")
 	if flowiseURL != "" && flowiseChatflowID != "" {
-		flowiseClient = client.NewFlowiseClient(flowiseURL, flowiseChatflowID, os.Getenv("FLOWISE_API_KEY"))
+		flowiseClient = client.NewFlowiseClient(flowiseURL, flowiseChatflowID, flowiseAPIKey)
 		log.Printf("Flowise enabled: %s/api/v1/prediction/%s", flowiseURL, flowiseChatflowID)
 	} else {
 		log.Println("Flowise not configured — natural chat via Gemini (ai-vision-service)")
+	}
+
+	// Owner Assistant — optional separate Flowise chatflow for owner numbers.
+	var ownerFlowiseClient *client.FlowiseClient
+	ownerChatflowID := os.Getenv("OWNER_CHATFLOW_ID")
+	if flowiseURL != "" && ownerChatflowID != "" {
+		ownerFlowiseClient = client.NewFlowiseClient(flowiseURL, ownerChatflowID, flowiseAPIKey)
+		log.Printf("Owner Assistant enabled: chatflow %s", ownerChatflowID)
+	}
+	ownerPhones := map[string]bool{}
+	for _, p := range strings.Split(os.Getenv("OWNER_PHONES"), ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			ownerPhones[p] = true
+		}
 	}
 
 	cache := state.NewCustomerCache(store, pricingClient)
@@ -109,7 +123,7 @@ func main() {
 		log.Fatalf("failed to init whatsmeow client: %v", err)
 	}
 
-	r := router.New(wa.WA, store, cache, aiClient, flowiseClient, searchClient, searchURL)
+	r := router.New(wa.WA, store, cache, aiClient, flowiseClient, ownerFlowiseClient, ownerPhones, searchClient, searchURL)
 	wa.SetEventHandler(r.HandleEvent)
 
 	go func() {

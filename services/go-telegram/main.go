@@ -80,17 +80,40 @@ type FlowiseResponse struct {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 var (
-	botToken       = mustEnv("TELEGRAM_BOT_TOKEN")
-	flowiseURL     = mustEnv("FLOWISE_ENDPOINT")
-	webhookSecret  = os.Getenv("WEBHOOK_SECRET")
-	port           = envOr("PORT", "8081")
-	flowiseTimeout  = parseTimeoutSec(envOr("FLOWISE_TIMEOUT", "60"))
-	waitMsgInterval = parseTimeoutSec(envOr("WAIT_MSG_INTERVAL", "6"))
+	botToken            = mustEnv("TELEGRAM_BOT_TOKEN")
+	flowiseURL          = mustEnv("FLOWISE_ENDPOINT")
+	ownerFlowiseURL     = os.Getenv("OWNER_FLOWISE_ENDPOINT")
+	webhookSecret       = os.Getenv("WEBHOOK_SECRET")
+	port                = envOr("PORT", "8081")
+	flowiseTimeout      = parseTimeoutSec(envOr("FLOWISE_TIMEOUT", "60"))
+	waitMsgInterval     = parseTimeoutSec(envOr("WAIT_MSG_INTERVAL", "6"))
+	ownerTelegramIDs    = parseIDSet(os.Getenv("OWNER_TELEGRAM_IDS"))
 
 	// Client terpisah: Telegram harus cepat, Flowise boleh lama
 	tgClient      = &http.Client{Timeout: 10 * time.Second}
 	flowiseClient = &http.Client{Timeout: flowiseTimeout + 5*time.Second}
 )
+
+// parseIDSet parses a comma-separated list of int64 IDs into a set.
+func parseIDSet(s string) map[int64]bool {
+	set := map[int64]bool{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var id int64
+		if _, err := fmt.Sscanf(part, "%d", &id); err == nil {
+			set[id] = true
+		}
+	}
+	return set
+}
+
+// isOwner returns true if the Telegram user ID is in the owner list.
+func isOwner(userID int64) bool {
+	return len(ownerTelegramIDs) > 0 && ownerTelegramIDs[userID]
+}
 
 func parseTimeoutSec(s string) time.Duration {
 	n, err := strconv.Atoi(s)
@@ -184,6 +207,17 @@ func processMessage(msg *Message) {
 	chatID := msg.Chat.ID
 	sessionID := strconv.FormatInt(chatID, 10)
 
+	// Owner routing: gunakan owner chatflow jika user terdaftar sebagai owner
+	// dan OWNER_FLOWISE_ENDPOINT sudah dikonfigurasi.
+	endpoint := flowiseURL
+	if msg.From != nil && isOwner(msg.From.ID) && ownerFlowiseURL != "" {
+		endpoint = ownerFlowiseURL
+		sessionID = "owner-" + sessionID
+	} else if msg.From != nil && isOwner(msg.From.ID) && ownerFlowiseURL == "" {
+		sendText(chatID, "⚠️ Owner mode belum dikonfigurasi (OWNER_FLOWISE_ENDPOINT kosong).")
+		return
+	}
+
 	// Kirim pesan tunggu pertama langsung
 	waitMsgID, err := sendAndGetID(chatID, waitingMessages[0])
 	if err != nil {
@@ -208,7 +242,7 @@ func processMessage(msg *Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), flowiseTimeout)
 	defer cancel()
 
-	answer, err := callFlowise(ctx, msg.Text, sessionID)
+	answer, err := callFlowise(ctx, msg.Text, sessionID, endpoint)
 	close(done) // hentikan rotasi pesan tunggu
 
 	if err != nil {
@@ -251,14 +285,14 @@ func processMessage(msg *Message) {
 
 // ── Flowise call ──────────────────────────────────────────────────────────────
 
-func callFlowise(ctx context.Context, question, sessionID string) (string, error) {
+func callFlowise(ctx context.Context, question, sessionID, endpoint string) (string, error) {
 	payload := FlowiseRequest{Question: question, SessionID: sessionID}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, flowiseURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}

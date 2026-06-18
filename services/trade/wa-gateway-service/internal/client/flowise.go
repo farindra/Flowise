@@ -95,6 +95,41 @@ func (c *FlowiseClient) GenerateNatural(ctx context.Context, message, phoneNumbe
 	return strings.TrimSpace(out.Text)
 }
 
+// AskDirect sends a raw question to this client's chatflow, returns the text
+// response. No history, no decoration — used by owner assistant commands.
+func (c *FlowiseClient) AskDirect(ctx context.Context, question, sessionID string) string {
+	type req struct {
+		Question  string `json:"question"`
+		SessionID string `json:"sessionId,omitempty"`
+	}
+	body, err := json.Marshal(req{Question: question, SessionID: sessionID})
+	if err != nil {
+		return ""
+	}
+	url := fmt.Sprintf("%s/api/v1/prediction/%s", c.baseURL, c.chatflowID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var out flowiseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.Text)
+}
+
 // convertHistory converts wa-gateway's []string history (alternating
 // user/assistant entries) to Flowise's [{role, content}] format.
 func convertHistory(history []string) []flowiseMessage {

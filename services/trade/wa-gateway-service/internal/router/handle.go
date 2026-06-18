@@ -37,6 +37,21 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 	phone := evt.Info.Sender.User
 	body := strings.TrimSpace(msgBody(evt))
 
+	// Owner numbers: route all non-command text messages directly to owner assistant.
+	if r.ownerPhones[phone] && r.ownerFlowise != nil && body != "" && !strings.HasPrefix(body, "/") {
+		r.reply(ctx, evt, "⏳ Memproses...")
+		go func() {
+			bgCtx := context.Background()
+			answer := r.ownerFlowise.AskDirect(bgCtx, body, "owner-wa-"+phone)
+			if answer == "" {
+				answer = "❌ Owner Assistant tidak merespons. Coba lagi."
+			}
+			r.reply(bgCtx, evt, answer)
+			_ = r.store.AddToHistory(phone, "assistant", answer)
+		}()
+		return nil
+	}
+
 	// Empty message (no text and no media) → default greeting.
 	if body == "" && !hasMedia(evt) {
 		msg := "Halo 👋 Saya Bobi dari Ocean Bearing Indonesia.\n\nSilakan ketik nama atau kode produk yang ingin Anda cari, atau kirim gambar produk untuk saya identifikasi ya."

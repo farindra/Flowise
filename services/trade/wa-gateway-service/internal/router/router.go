@@ -50,8 +50,10 @@ type Router struct {
 	store   *state.Store
 	cache   *state.CustomerCache
 	ai      *client.AIVisionClient
-	flowise *client.FlowiseClient // optional; nil = use Gemini only
-	search  *client.ProductSearchClient
+	flowise      *client.FlowiseClient // optional; nil = use Gemini only
+	ownerFlowise *client.FlowiseClient // optional; owner-assistant chatflow
+	ownerPhones  map[string]bool       // set of phone numbers with owner access
+	search       *client.ProductSearchClient
 
 	catalogExportURL string // product-search-service /export/csv endpoint
 
@@ -69,13 +71,15 @@ type Router struct {
 // New creates a Router. flowise may be nil — if nil, natural chat falls back
 // to ai-vision-service's Gemini endpoint. searchBaseURL is the base URL of
 // product-search-service (e.g. "http://product-search-service:8101").
-func New(wa *whatsmeow.Client, store *state.Store, cache *state.CustomerCache, ai *client.AIVisionClient, flowise *client.FlowiseClient, search *client.ProductSearchClient, searchBaseURL string) *Router {
+func New(wa *whatsmeow.Client, store *state.Store, cache *state.CustomerCache, ai *client.AIVisionClient, flowise *client.FlowiseClient, ownerFlowise *client.FlowiseClient, ownerPhones map[string]bool, search *client.ProductSearchClient, searchBaseURL string) *Router {
 	return &Router{
 		wa:               wa,
 		store:            store,
 		cache:            cache,
 		ai:               ai,
 		flowise:          flowise,
+		ownerFlowise:     ownerFlowise,
+		ownerPhones:      ownerPhones,
 		search:           search,
 		catalogExportURL: searchBaseURL + "/export/csv",
 		notif:            notification.NewNotifier(wa),
