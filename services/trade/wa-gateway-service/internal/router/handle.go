@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -38,9 +39,27 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 	phone := evt.Info.Sender.User
 	body := strings.TrimSpace(msgBody(evt))
 
-	// Owner numbers: handle Excel document uploads → forward to TRADE supplier-offers.
+	// Owner numbers: handle Excel document uploads → download, ask supplier+currency.
 	if r.ownerPhones[phone] && r.trade != nil && hasExcelDoc(evt) {
 		return r.handleOwnerSupplierUpload(ctx, evt)
+	}
+
+	// Owner numbers: if there's a pending upload, intercept text as supplier+currency reply.
+	if r.ownerPhones[phone] && r.trade != nil {
+		if p := r.takePendingUpload(phone); p != nil {
+			if time.Since(p.at) > 10*time.Minute {
+				r.reply(ctx, evt, "⏰ Upload expired. Kirim ulang file Excel-nya.")
+				return nil
+			}
+			supplierName, currency, ok := parseSupplierReply(body)
+			if !ok {
+				r.setPendingUpload(phone, p) // put back
+				r.reply(ctx, evt, "❓ Format tidak dikenali. Balas dengan:\nSUPPLIER: <nama>, CURRENCY: <USD/IDR/JPY/dll>\n\nAtau ketik skip untuk auto-detect.")
+				return nil
+			}
+			go r.doUploadSupplierOffer(ctx, evt, p, supplierName, currency)
+			return nil
+		}
 	}
 
 	// Owner numbers: route all non-command text messages directly to owner assistant.
@@ -145,8 +164,34 @@ func hasExcelDoc(evt *events.Message) bool {
 		strings.HasSuffix(strings.ToLower(fname), ".xls")
 }
 
-// handleOwnerSupplierUpload downloads an Excel document from an owner message
-// and uploads it to TRADE for background supplier-offer processing.
+// parseSupplierReply parses a reply like "SUPPLIER: SANKO, CURRENCY: USD"
+// or "skip". Returns (supplierName, currency, ok).
+func parseSupplierReply(text string) (supplierName, currency string, ok bool) {
+	t := strings.TrimSpace(text)
+	lower := strings.ToLower(t)
+	if lower == "skip" || lower == "auto" || lower == "-" {
+		return "", "USD", true
+	}
+	reSup := regexp.MustCompile(`(?i)supplier\s*:\s*([^,\n]+)`)
+	reCur := regexp.MustCompile(`(?i)currency\s*:\s*([A-Za-z]{3})`)
+	mSup := reSup.FindStringSubmatch(t)
+	mCur := reCur.FindStringSubmatch(t)
+	if mSup == nil && mCur == nil {
+		return "", "", false
+	}
+	if mSup != nil {
+		supplierName = strings.TrimSpace(mSup[1])
+	}
+	if mCur != nil {
+		currency = strings.ToUpper(strings.TrimSpace(mCur[1]))
+	} else {
+		currency = "USD"
+	}
+	return supplierName, currency, true
+}
+
+// handleOwnerSupplierUpload downloads an Excel doc and asks the owner for
+// supplier name + currency before uploading to TRADE.
 func (r *Router) handleOwnerSupplierUpload(ctx context.Context, evt *events.Message) error {
 	phone := evt.Info.Sender.User
 	doc := evt.Message.GetDocumentMessage()
@@ -155,12 +200,10 @@ func (r *Router) handleOwnerSupplierUpload(ctx context.Context, evt *events.Mess
 		fname = "penawaran-supplier.xlsx"
 	}
 
-	r.reply(ctx, evt, "⏳ Menerima file penawaran supplier... sedang diproses ke TRADE.")
+	r.reply(ctx, evt, "⏳ Mengunduh file dari WhatsApp...")
 
 	go func() {
 		bgCtx := context.Background()
-
-		// Download the document via whatsmeow
 		data, err := r.wa.Download(bgCtx, doc)
 		if err != nil {
 			log.Printf("handleOwnerSupplierUpload: download error for %s: %v", phone, err)
@@ -168,26 +211,49 @@ func (r *Router) handleOwnerSupplierUpload(ctx context.Context, evt *events.Mess
 			return
 		}
 
-		result, err := r.trade.UploadSupplierOffer(bgCtx, data, fname, "", "")
-		if err != nil {
-			log.Printf("handleOwnerSupplierUpload: upload error for %s: %v", phone, err)
-			r.reply(bgCtx, evt, "❌ Gagal upload ke TRADE: "+err.Error())
-			return
-		}
+		r.setPendingUpload(phone, &pendingUpload{fileData: data, fileName: fname, at: time.Now()})
 
 		msg := fmt.Sprintf(
-			"✅ *File penawaran supplier diterima!*\n\n"+
-				"📄 File: %s\n"+
-				"🔑 Upload ID: %s\n"+
-				"📊 Status: sedang diproses (auto-mapping produk)\n\n"+
-				"Cek hasil di TRADE → *Penawaran Supplier* dalam beberapa menit.\n"+
-				"Gunakan `/owner ringkasan harga supplier` untuk lihat hasil analisa.",
-			fname, result.UploadID[:8]+"...",
+			"📄 File *%s* (%.1f KB) siap diupload.\n\n"+
+				"Balas dengan format:\n"+
+				"SUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>\n\n"+
+				"Contoh: SUPPLIER: SANKO, CURRENCY: USD\n\n"+
+				"Atau ketik *skip* untuk auto-detect dari file.",
+			fname, float64(len(data))/1024,
 		)
 		r.reply(bgCtx, evt, msg)
-		_ = r.store.AddToHistory(phone, "assistant", msg)
 	}()
 	return nil
+}
+
+// doUploadSupplierOffer uploads the pending Excel file to TRADE.
+func (r *Router) doUploadSupplierOffer(ctx context.Context, evt *events.Message, p *pendingUpload, supplierName, currency string) {
+	phone := evt.Info.Sender.User
+	r.reply(ctx, evt, fmt.Sprintf("⏳ Mengupload *%s* ke TRADE...", p.fileName))
+
+	result, err := r.trade.UploadSupplierOffer(ctx, p.fileData, p.fileName, supplierName, currency)
+	if err != nil {
+		log.Printf("doUploadSupplierOffer: upload error for %s: %v", phone, err)
+		r.reply(ctx, evt, "❌ Gagal upload ke TRADE: "+err.Error())
+		return
+	}
+
+	supLabel := supplierName
+	if supLabel == "" {
+		supLabel = "_(auto-detect dari file)_"
+	}
+	msg := fmt.Sprintf(
+		"✅ *File penawaran supplier diterima!*\n\n"+
+			"📄 File: %s\n"+
+			"🏢 Supplier: %s\n"+
+			"💱 Currency: %s\n"+
+			"🔑 Upload ID: %s\n\n"+
+			"Proses auto-mapping produk sedang berjalan di background.\n"+
+			"Cek hasil di TRADE → *Penawaran Supplier* dalam beberapa menit.",
+		p.fileName, supLabel, currency, result.UploadID,
+	)
+	r.reply(ctx, evt, msg)
+	_ = r.store.AddToHistory(phone, "assistant", msg)
 }
 
 var fallbackProductCodeRe = regexp.MustCompile(`\b\d{2,}[\/\-]?\d{0,3}[A-Za-z0-9]*\b`)

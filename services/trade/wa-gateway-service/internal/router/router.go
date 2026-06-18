@@ -43,6 +43,13 @@ type ActiveConv struct {
 	Checkout                 *CheckoutData
 }
 
+// pendingUpload holds a downloaded Excel file waiting for supplier info.
+type pendingUpload struct {
+	fileData []byte
+	fileName string
+	at       time.Time
+}
+
 // Router is the Go port of the MessageHandler class. One instance per
 // process, shared across all incoming messages.
 type Router struct {
@@ -61,12 +68,13 @@ type Router struct {
 	notif            *notification.Notifier
 	marketingNumbers []string
 
-	mu          sync.Mutex
-	lastMsgTime map[string]int64
-	msgCount    map[string]int
-	queues      map[string][]*events.Message
-	processing  map[string]bool
-	activeConvs map[string]*ActiveConv
+	mu             sync.Mutex
+	lastMsgTime    map[string]int64
+	msgCount       map[string]int
+	queues         map[string][]*events.Message
+	processing     map[string]bool
+	activeConvs    map[string]*ActiveConv
+	pendingUploads map[string]*pendingUpload
 }
 
 // New creates a Router. flowise may be nil — if nil, natural chat falls back
@@ -91,6 +99,7 @@ func New(wa *whatsmeow.Client, store *state.Store, cache *state.CustomerCache, a
 		queues:           make(map[string][]*events.Message),
 		processing:       make(map[string]bool),
 		activeConvs:      make(map[string]*ActiveConv),
+		pendingUploads:   make(map[string]*pendingUpload),
 	}
 }
 
@@ -307,4 +316,18 @@ func (r *Router) stubReply(ctx context.Context, evt *events.Message, featureName
 // nowMs returns the current time in milliseconds.
 func nowMs() int64 {
 	return time.Now().UnixMilli()
+}
+
+func (r *Router) setPendingUpload(phone string, p *pendingUpload) {
+	r.mu.Lock()
+	r.pendingUploads[phone] = p
+	r.mu.Unlock()
+}
+
+func (r *Router) takePendingUpload(phone string) *pendingUpload {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.pendingUploads[phone]
+	delete(r.pendingUploads, phone)
+	return p
 }
