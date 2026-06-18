@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// ── Telegram types ────────────────────────────────────────────────────────────
+// ── Telegram types ─────────────────────────────────────────────────────────────
 
 type Update struct {
 	UpdateID int      `json:"update_id"`
@@ -48,11 +48,6 @@ type SendMessage struct {
 	ParseMode string `json:"parse_mode,omitempty"`
 }
 
-type SendChatAction struct {
-	ChatID int64  `json:"chat_id"`
-	Action string `json:"action"`
-}
-
 type EditMessageText struct {
 	ChatID    int64  `json:"chat_id"`
 	MessageID int    `json:"message_id"`
@@ -65,7 +60,6 @@ type TelegramSendResult struct {
 	Result Message `json:"result"`
 }
 
-
 // ── Flowise types ─────────────────────────────────────────────────────────────
 
 type FlowiseRequest struct {
@@ -77,24 +71,304 @@ type FlowiseResponse struct {
 	Text string `json:"text"`
 }
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── Bot ───────────────────────────────────────────────────────────────────────
+// Bot encapsulates one Telegram bot: one token, one Flowise endpoint, and an
+// optional allow-list of Telegram user IDs (non-empty = deny non-members).
+
+type Bot struct {
+	name          string
+	token         string
+	flowiseURL    string
+	ownerIDs      map[int64]bool
+	webhookSecret string
+	tgClient      *http.Client
+	flowiseCli    *http.Client
+	timeout       time.Duration
+	waitInterval  time.Duration
+}
+
+var waitingMessages = []string{
+	"⏳ Mencari informasi ...",
+	"⏳ Mohon ditunggu ...",
+	"⏳ Masih mencari informasi ...",
+	"⏳ ...",
+	"⏳ Harap bersabar 🙂 masih proses ...",
+	"⏳ Sedang diproses ...",
+	"⏳ Sebentar lagi ...",
+}
+
+func (b *Bot) handler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if b.webhookSecret != "" {
+		if r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != b.webhookSecret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var update Update
+	if err := json.Unmarshal(body, &update); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if update.Message == nil || strings.TrimSpace(update.Message.Text) == "" {
+		return
+	}
+	go b.processMessage(update.Message)
+}
+
+func (b *Bot) processMessage(msg *Message) {
+	chatID := msg.Chat.ID
+	sessionID := strconv.FormatInt(chatID, 10)
+
+	// Guard: if ownerIDs is non-empty, deny users not in the list.
+	if len(b.ownerIDs) > 0 && (msg.From == nil || !b.ownerIDs[msg.From.ID]) {
+		b.sendText(chatID, "❌ Akses ditolak. Bot ini hanya untuk owner Ocean Bearings.")
+		return
+	}
+
+	waitMsgID, err := b.sendAndGetID(chatID, waitingMessages[0])
+	if err != nil {
+		log.Printf("[%s] failed to send wait message: %v", b.name, err)
+	}
+
+	done := make(chan struct{})
+	if waitMsgID > 0 {
+		go func() {
+			for i := 1; ; i++ {
+				select {
+				case <-done:
+					return
+				case <-time.After(b.waitInterval):
+					b.editTextAsync(chatID, waitMsgID, waitingMessages[i%len(waitingMessages)])
+				}
+			}
+		}()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
+	defer cancel()
+
+	answer, err := b.callFlowise(ctx, msg.Text, sessionID)
+	close(done)
+
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("[%s] timeout for session %s", b.name, sessionID)
+			answer = "🔴 Maaf, server data kami sedang sangat sibuk, mohon coba kembali nanti."
+		} else {
+			log.Printf("[%s] error for session %s: %v", b.name, sessionID, err)
+			answer = "⚠️ Maaf, terjadi kesalahan. Silakan coba kembali."
+		}
+	}
+
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		answer = "⚠️ Tidak ada respons dari sistem. Silakan coba kembali."
+	}
+
+	log.Printf("[%s] reply session %s: %.80s", b.name, sessionID, answer)
+
+	const maxLen = 4096
+	first, rest := answer, ""
+	if len(answer) > maxLen {
+		first = answer[:maxLen]
+		rest = answer[maxLen:]
+	}
+
+	if waitMsgID > 0 {
+		if !b.editTextSafe(chatID, waitMsgID, first) {
+			b.sendText(chatID, first)
+		}
+	} else {
+		b.sendText(chatID, first)
+	}
+	if rest != "" {
+		b.sendText(chatID, rest)
+	}
+}
+
+func (b *Bot) callFlowise(ctx context.Context, question, sessionID string) (string, error) {
+	payload := FlowiseRequest{Question: question, SessionID: sessionID}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.flowiseURL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.flowiseCli.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("flowise returned %d: %s", resp.StatusCode, string(raw))
+	}
+	var fr FlowiseResponse
+	if err := json.Unmarshal(raw, &fr); err != nil {
+		return "", fmt.Errorf("parse response: %w (body: %s)", err, string(raw))
+	}
+	text := strings.TrimSpace(fr.Text)
+	if text == "" {
+		log.Printf("[%s] empty text response, raw: %.200s", b.name, string(raw))
+		return "", fmt.Errorf("flowise returned empty text")
+	}
+	return text, nil
+}
+
+// registerWebhook calls Telegram's setWebhook API so Telegram sends updates to
+// this service. Runs in a goroutine on startup when WEBHOOK_BASE_URL is set.
+func (b *Bot) registerWebhook(webhookURL string) {
+	type setWebhookReq struct {
+		URL         string `json:"url"`
+		SecretToken string `json:"secret_token,omitempty"`
+	}
+	payload := setWebhookReq{URL: webhookURL}
+	if b.webhookSecret != "" {
+		payload.SecretToken = b.webhookSecret
+	}
+	if err := b.telegramAPI("setWebhook", payload); err != nil {
+		log.Printf("[%s] setWebhook error: %v", b.name, err)
+	} else {
+		log.Printf("[%s] webhook registered: %s", b.name, webhookURL)
+	}
+}
+
+// ── Telegram helpers ──────────────────────────────────────────────────────────
+
+func (b *Bot) telegramAPI(method string, payload any) error {
+	_, err := b.telegramAPIWithResult(method, payload)
+	return err
+}
+
+func (b *Bot) telegramAPIWithResult(method string, payload any) ([]byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", b.token, method)
+	resp, err := b.tgClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("telegram %s: %w", method, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("telegram %s returned %d: %s", method, resp.StatusCode, string(raw))
+	}
+	return raw, nil
+}
 
 var (
-	botToken            = mustEnv("TELEGRAM_BOT_TOKEN")
-	flowiseURL          = mustEnv("FLOWISE_ENDPOINT")
-	ownerFlowiseURL     = os.Getenv("OWNER_FLOWISE_ENDPOINT")
-	webhookSecret       = os.Getenv("WEBHOOK_SECRET")
-	port                = envOr("PORT", "8081")
-	flowiseTimeout      = parseTimeoutSec(envOr("FLOWISE_TIMEOUT", "60"))
-	waitMsgInterval     = parseTimeoutSec(envOr("WAIT_MSG_INTERVAL", "6"))
-	ownerTelegramIDs    = parseIDSet(os.Getenv("OWNER_TELEGRAM_IDS"))
-
-	// Client terpisah: Telegram harus cepat, Flowise boleh lama
-	tgClient      = &http.Client{Timeout: 10 * time.Second}
-	flowiseClient = &http.Client{Timeout: flowiseTimeout + 5*time.Second}
+	reMdLink = regexp.MustCompile(`\[([^\]]+)\]\s*\(([^)]+)\)`)
+	reBold   = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	reBullet = regexp.MustCompile(`(?m)^\*[ \t]+`)
 )
 
-// parseIDSet parses a comma-separated list of int64 IDs into a set.
+func mdToHTML(s string) string {
+	s = reBullet.ReplaceAllString(s, "• ")
+	s = html.EscapeString(s)
+	s = reMdLink.ReplaceAllStringFunc(s, func(m string) string {
+		parts := reMdLink.FindStringSubmatch(m)
+		if len(parts) < 3 {
+			return m
+		}
+		text := strings.TrimSpace(parts[1])
+		target := strings.TrimSpace(parts[2])
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			return fmt.Sprintf(`<a href="%s">%s</a>`, target, text)
+		}
+		return text
+	})
+	s = reBold.ReplaceAllString(s, `<b>$1</b>`)
+	return s
+}
+
+func (b *Bot) sendText(chatID int64, text string) {
+	text = mdToHTML(text)
+	const maxLen = 4096
+	for len(text) > 0 {
+		chunk := text
+		if len(chunk) > maxLen {
+			chunk = text[:maxLen]
+			text = text[maxLen:]
+		} else {
+			text = ""
+		}
+		if err := b.telegramAPI("sendMessage", SendMessage{
+			ChatID:    chatID,
+			Text:      chunk,
+			ParseMode: "HTML",
+		}); err != nil {
+			log.Printf("[%s] sendMessage error: %v", b.name, err)
+			_ = b.telegramAPI("sendMessage", SendMessage{ChatID: chatID, Text: chunk})
+		}
+	}
+}
+
+func (b *Bot) sendAndGetID(chatID int64, text string) (int, error) {
+	raw, err := b.telegramAPIWithResult("sendMessage", SendMessage{ChatID: chatID, Text: text})
+	if err != nil {
+		return 0, err
+	}
+	var result TelegramSendResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return 0, err
+	}
+	return result.Result.MessageID, nil
+}
+
+func (b *Bot) editTextSafe(chatID int64, messageID int, text string) bool {
+	if text == "" {
+		return false
+	}
+	text = mdToHTML(text)
+	err := b.telegramAPI("editMessageText", EditMessageText{
+		ChatID: chatID, MessageID: messageID, Text: text, ParseMode: "HTML",
+	})
+	if err != nil {
+		log.Printf("[%s] editMessageText error: %v — retrying plain", b.name, err)
+		err = b.telegramAPI("editMessageText", EditMessageText{
+			ChatID: chatID, MessageID: messageID, Text: text,
+		})
+		if err != nil {
+			log.Printf("[%s] editMessageText retry failed: %v", b.name, err)
+			return false
+		}
+	}
+	return true
+}
+
+func (b *Bot) editTextAsync(chatID int64, messageID int, text string) {
+	b.telegramAPI("editMessageText", EditMessageText{ //nolint
+		ChatID: chatID, MessageID: messageID, Text: text,
+	})
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 func parseIDSet(s string) map[int64]bool {
 	set := map[int64]bool{}
 	for _, part := range strings.Split(s, ",") {
@@ -108,11 +382,6 @@ func parseIDSet(s string) map[int64]bool {
 		}
 	}
 	return set
-}
-
-// isOwner returns true if the Telegram user ID is in the owner list.
-func isOwner(userID int64) bool {
-	return len(ownerTelegramIDs) > 0 && ownerTelegramIDs[userID]
 }
 
 func parseTimeoutSec(s string) time.Duration {
@@ -138,326 +407,78 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func newBot(name, token, flowiseURL, webhookSecret string, ownerIDs map[int64]bool, timeout, waitInterval time.Duration) *Bot {
+	return &Bot{
+		name:          name,
+		token:         token,
+		flowiseURL:    flowiseURL,
+		ownerIDs:      ownerIDs,
+		webhookSecret: webhookSecret,
+		tgClient:      &http.Client{Timeout: 10 * time.Second},
+		flowiseCli:    &http.Client{Timeout: timeout + 5*time.Second},
+		timeout:       timeout,
+		waitInterval:  waitInterval,
+	}
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
+	port := envOr("PORT", "8081")
+	// WEBHOOK_BASE_URL: public URL prefix for webhook registration, e.g.
+	// https://agentic.oceanbearings.co.id/telegram
+	baseURL := os.Getenv("WEBHOOK_BASE_URL")
+	timeout := parseTimeoutSec(envOr("FLOWISE_TIMEOUT", "60"))
+	waitInterval := parseTimeoutSec(envOr("WAIT_MSG_INTERVAL", "6"))
+	webhookSecret := os.Getenv("WEBHOOK_SECRET")
+
+	// Customer bot — required
+	customerBot := newBot(
+		"customer",
+		mustEnv("TELEGRAM_BOT_TOKEN"),
+		mustEnv("FLOWISE_ENDPOINT"),
+		webhookSecret,
+		nil, // no ID restriction — allow all users
+		timeout,
+		waitInterval,
+	)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook", handleWebhook)
+	mux.HandleFunc("/webhook", customerBot.handler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "OK")
 	})
 
-	log.Printf("go-telegram service listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
-}
-
-// ── Webhook handler ───────────────────────────────────────────────────────────
-
-func handleWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+	if baseURL != "" {
+		go customerBot.registerWebhook(baseURL + "/webhook")
 	}
 
-	// Verify Telegram secret token if configured
-	if webhookSecret != "" {
-		if r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != webhookSecret {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
-	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	var update Update
-	if err := json.Unmarshal(body, &update); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	// Ack Telegram immediately; process async
-	w.WriteHeader(http.StatusOK)
-
-	if update.Message == nil || strings.TrimSpace(update.Message.Text) == "" {
-		return
-	}
-
-	go processMessage(update.Message)
-}
-
-// ── Message processing ────────────────────────────────────────────────────────
-
-var waitingMessages = []string{
-	"⏳ Mencari informasi ...",
-	"⏳ Mohon ditunggu ...",
-	"⏳ Masih mencari informasi ...",
-	"⏳ ...",
-	"⏳ Harap bersabar 🙂 masih proses ...",
-	"⏳ Sedang diproses ...",
-	"⏳ Sebentar lagi ...",
-}
-
-func processMessage(msg *Message) {
-	chatID := msg.Chat.ID
-	sessionID := strconv.FormatInt(chatID, 10)
-
-	// Owner routing: gunakan owner chatflow jika user terdaftar sebagai owner
-	// dan OWNER_FLOWISE_ENDPOINT sudah dikonfigurasi.
-	endpoint := flowiseURL
-	if msg.From != nil && isOwner(msg.From.ID) && ownerFlowiseURL != "" {
-		endpoint = ownerFlowiseURL
-		sessionID = "owner-" + sessionID
-	} else if msg.From != nil && isOwner(msg.From.ID) && ownerFlowiseURL == "" {
-		sendText(chatID, "⚠️ Owner mode belum dikonfigurasi (OWNER_FLOWISE_ENDPOINT kosong).")
-		return
-	}
-
-	// Kirim pesan tunggu pertama langsung
-	waitMsgID, err := sendAndGetID(chatID, waitingMessages[0])
-	if err != nil {
-		log.Printf("[telegram] failed to send wait message: %v", err)
-	}
-
-	// Goroutine: ganti teks tunggu tiap 3 detik sampai Flowise selesai
-	done := make(chan struct{})
-	if waitMsgID > 0 {
-		go func() {
-			for i := 1; ; i++ {
-				select {
-				case <-done:
-					return
-				case <-time.After(waitMsgInterval):
-					editTextAsync(chatID, waitMsgID, waitingMessages[i%len(waitingMessages)])
-				}
-			}
-		}()
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), flowiseTimeout)
-	defer cancel()
-
-	answer, err := callFlowise(ctx, msg.Text, sessionID, endpoint)
-	close(done) // hentikan rotasi pesan tunggu
-
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("[flowise] timeout for session %s", sessionID)
-			answer = "🔴 Maaf, server data kami sedang sangat sibuk, mohon coba kembali nanti."
+	// Owner bot — optional, enabled when OWNER_BOT_TOKEN + OWNER_FLOWISE_ENDPOINT are set.
+	// Messages from users not listed in OWNER_TELEGRAM_IDS are denied automatically.
+	ownerBotToken := os.Getenv("OWNER_BOT_TOKEN")
+	ownerFlowiseURL := os.Getenv("OWNER_FLOWISE_ENDPOINT")
+	if ownerBotToken != "" && ownerFlowiseURL != "" {
+		ownerBot := newBot(
+			"owner",
+			ownerBotToken,
+			ownerFlowiseURL,
+			webhookSecret,
+			parseIDSet(os.Getenv("OWNER_TELEGRAM_IDS")),
+			timeout,
+			waitInterval,
+		)
+		mux.HandleFunc("/webhook/owner", ownerBot.handler)
+		log.Printf("Owner bot enabled on /webhook/owner")
+		if baseURL != "" {
+			go ownerBot.registerWebhook(baseURL + "/webhook/owner")
 		} else {
-			log.Printf("[flowise] error for session %s: %v", sessionID, err)
-			answer = "⚠️ Maaf, terjadi kesalahan. Silakan coba kembali."
-		}
-	}
-
-	// Guard: pastikan answer tidak kosong sebelum dikirim
-	answer = strings.TrimSpace(answer)
-	if answer == "" {
-		answer = "⚠️ Tidak ada respons dari sistem. Silakan coba kembali."
-	}
-
-	log.Printf("[reply] session %s: %.80s", sessionID, answer)
-
-	const maxLen = 4096
-	first, rest := answer, ""
-	if len(answer) > maxLen {
-		first = answer[:maxLen]
-		rest = answer[maxLen:]
-	}
-
-	if waitMsgID > 0 {
-		// Coba edit pesan tunggu; kalau gagal (misal message sudah expired), kirim baru
-		if !editTextSafe(chatID, waitMsgID, first) {
-			sendText(chatID, first)
+			log.Println("WEBHOOK_BASE_URL not set — owner webhook not auto-registered, set manually")
 		}
 	} else {
-		sendText(chatID, first)
-	}
-	if rest != "" {
-		sendText(chatID, rest)
-	}
-}
-
-// ── Flowise call ──────────────────────────────────────────────────────────────
-
-func callFlowise(ctx context.Context, question, sessionID, endpoint string) (string, error) {
-	payload := FlowiseRequest{Question: question, SessionID: sessionID}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
+		log.Println("Owner bot not configured (OWNER_BOT_TOKEN or OWNER_FLOWISE_ENDPOINT missing)")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := flowiseClient.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("flowise returned %d: %s", resp.StatusCode, string(raw))
-	}
-
-	var fr FlowiseResponse
-	if err := json.Unmarshal(raw, &fr); err != nil {
-		return "", fmt.Errorf("parse response: %w (body: %s)", err, string(raw))
-	}
-
-	text := strings.TrimSpace(fr.Text)
-	if text == "" {
-		log.Printf("[flowise] empty text response, raw: %.200s", string(raw))
-		return "", fmt.Errorf("flowise returned empty text")
-	}
-	return text, nil
-}
-
-// ── Telegram helpers ──────────────────────────────────────────────────────────
-
-func telegramAPI(method string, payload any) error {
-	_, err := telegramAPIWithResult(method, payload)
-	return err
-}
-
-func telegramAPIWithResult(method string, payload any) ([]byte, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", botToken, method)
-	resp, err := tgClient.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("telegram %s: %w", method, err)
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("telegram %s returned %d: %s", method, resp.StatusCode, string(raw))
-	}
-	return raw, nil
-}
-
-
-// mdToHTML konversi subset Markdown → HTML untuk Telegram
-// Handles: [text](url), **bold**, *italic*, `code`, ```block```
-var (
-	reMdLink  = regexp.MustCompile(`\[([^\]]+)\]\s*\(([^)]+)\)`)
-	reBold    = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
-	reBullet  = regexp.MustCompile(`(?m)^\*[ \t]+`)   // * di awal baris = bullet list
-)
-
-// mdToHTML konversi Markdown sederhana ke HTML Telegram
-func mdToHTML(s string) string {
-	// 1. Ganti bullet list * → • sebelum apapun (cegah false italic)
-	s = reBullet.ReplaceAllString(s, "• ")
-
-	// 2. HTML-escape seluruh teks — [, ], (, ) tidak ikut ter-escape
-	s = html.EscapeString(s)
-
-	// 3. Konversi [text](url) → <a href>
-	s = reMdLink.ReplaceAllStringFunc(s, func(m string) string {
-		parts := reMdLink.FindStringSubmatch(m)
-		if len(parts) < 3 {
-			return m
-		}
-		text := strings.TrimSpace(parts[1])
-		target := strings.TrimSpace(parts[2])
-		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-			return fmt.Sprintf(`<a href="%s">%s</a>`, target, text)
-		}
-		return text // placeholder bukan URL → teks saja
-	})
-
-	// 4. Bold saja (italic dihapus — * untuk bullet list menyebabkan false match)
-	s = reBold.ReplaceAllString(s, `<b>$1</b>`)
-
-	return s
-}
-
-func sendText(chatID int64, text string) {
-	text = mdToHTML(text)
-	const maxLen = 4096
-	for len(text) > 0 {
-		chunk := text
-		if len(chunk) > maxLen {
-			chunk = text[:maxLen]
-			text = text[maxLen:]
-		} else {
-			text = ""
-		}
-		if err := telegramAPI("sendMessage", SendMessage{
-			ChatID:    chatID,
-			Text:      chunk,
-			ParseMode: "HTML",
-		}); err != nil {
-			log.Printf("[telegram] sendMessage error: %v", err)
-			_ = telegramAPI("sendMessage", SendMessage{ChatID: chatID, Text: chunk})
-		}
-	}
-}
-
-func sendChatAction(chatID int64, action string) {
-	if err := telegramAPI("sendChatAction", SendChatAction{ChatID: chatID, Action: action}); err != nil {
-		log.Printf("[telegram] sendChatAction error: %v", err)
-	}
-}
-
-func sendAndGetID(chatID int64, text string) (int, error) {
-	raw, err := telegramAPIWithResult("sendMessage", SendMessage{ChatID: chatID, Text: text})
-	if err != nil {
-		return 0, err
-	}
-	var result TelegramSendResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return 0, err
-	}
-	return result.Result.MessageID, nil
-}
-
-// editTextSafe mengembalikan true jika berhasil, false jika gagal total (pakai sendText sebagai fallback)
-func editTextSafe(chatID int64, messageID int, text string) bool {
-	if text == "" {
-		return false
-	}
-	text = mdToHTML(text)
-	err := telegramAPI("editMessageText", EditMessageText{
-		ChatID: chatID, MessageID: messageID, Text: text, ParseMode: "HTML",
-	})
-	if err != nil {
-		log.Printf("[telegram] editMessageText error: %v — retrying without Markdown", err)
-		err = telegramAPI("editMessageText", EditMessageText{
-			ChatID: chatID, MessageID: messageID, Text: text,
-		})
-		if err != nil {
-			log.Printf("[telegram] editMessageText retry failed: %v", err)
-			return false
-		}
-	}
-	return true
-}
-
-// editTextAsync dipakai goroutine rotating — tidak perlu fallback
-func editTextAsync(chatID int64, messageID int, text string) {
-	telegramAPI("editMessageText", EditMessageText{ //nolint
-		ChatID: chatID, MessageID: messageID, Text: text,
-	})
+	log.Printf("go-telegram service listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
