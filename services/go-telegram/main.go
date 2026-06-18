@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"regexp"
@@ -24,11 +25,26 @@ type Update struct {
 	Message  *Message `json:"message"`
 }
 
+type Document struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+	FileSize int64  `json:"file_size"`
+}
+
+type GetFileResponse struct {
+	OK     bool   `json:"ok"`
+	Result struct {
+		FilePath string `json:"file_path"`
+	} `json:"result"`
+}
+
 type Message struct {
-	MessageID int    `json:"message_id"`
-	From      *User  `json:"from"`
-	Chat      Chat   `json:"chat"`
-	Text      string `json:"text"`
+	MessageID int       `json:"message_id"`
+	From      *User     `json:"from"`
+	Chat      Chat      `json:"chat"`
+	Text      string    `json:"text"`
+	Document  *Document `json:"document"`
 }
 
 type User struct {
@@ -121,7 +137,15 @@ func (b *Bot) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	if update.Message == nil || strings.TrimSpace(update.Message.Text) == "" {
+	if update.Message == nil {
+		return
+	}
+	// Owner Excel upload
+	if update.Message.Document != nil && b.isExcelDoc(update.Message.Document) {
+		go b.processDocumentMessage(update.Message)
+		return
+	}
+	if strings.TrimSpace(update.Message.Text) == "" {
 		return
 	}
 	go b.processMessage(update.Message)
@@ -236,6 +260,116 @@ func (b *Bot) callFlowise(ctx context.Context, question, sessionID string) (stri
 		return "", fmt.Errorf("flowise returned empty text")
 	}
 	return text, nil
+}
+
+func (b *Bot) isExcelDoc(doc *Document) bool {
+	if doc == nil {
+		return false
+	}
+	return doc.MimeType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+		doc.MimeType == "application/vnd.ms-excel" ||
+		strings.HasSuffix(strings.ToLower(doc.FileName), ".xlsx") ||
+		strings.HasSuffix(strings.ToLower(doc.FileName), ".xls")
+}
+
+// processDocumentMessage handles Excel uploads from owner — downloads from Telegram
+// and forwards to TRADE supplier-offers API.
+func (b *Bot) processDocumentMessage(msg *Message) {
+	chatID := msg.Chat.ID
+	doc := msg.Document
+
+	if len(b.ownerIDs) > 0 && (msg.From == nil || !b.ownerIDs[msg.From.ID]) {
+		b.sendText(chatID, "❌ Hanya owner yang bisa upload penawaran supplier.")
+		return
+	}
+
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotKey := os.Getenv("TRADE_BOT_API_KEY")
+	if tradeURL == "" || tradeBotKey == "" {
+		b.sendText(chatID, "⚠️ TRADE_URL atau TRADE_BOT_API_KEY belum dikonfigurasi.")
+		return
+	}
+
+	b.sendText(chatID, "⏳ Mengunduh file penawaran supplier dari Telegram...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// 1. getFile → get download path
+	type getFileReq struct {
+		FileID string `json:"file_id"`
+	}
+	raw, err := b.telegramAPIWithResult("getFile", getFileReq{FileID: doc.FileID})
+	if err != nil {
+		log.Printf("[%s] getFile error: %v", b.name, err)
+		b.sendText(chatID, "❌ Gagal mengambil file dari Telegram.")
+		return
+	}
+	var gfResp GetFileResponse
+	if err := json.Unmarshal(raw, &gfResp); err != nil || gfResp.Result.FilePath == "" {
+		b.sendText(chatID, "❌ Respons getFile tidak valid.")
+		return
+	}
+
+	// 2. Download file bytes
+	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.token, gfResp.Result.FilePath)
+	dlReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	dlResp, err := b.tgClient.Do(dlReq)
+	if err != nil {
+		b.sendText(chatID, "❌ Gagal mengunduh file dari Telegram.")
+		return
+	}
+	defer dlResp.Body.Close()
+	fileData, _ := io.ReadAll(dlResp.Body)
+
+	fname := doc.FileName
+	if fname == "" {
+		fname = "penawaran-supplier.xlsx"
+	}
+
+	b.sendText(chatID, fmt.Sprintf("⏳ Mengupload *%s* ke TRADE untuk diproses...", fname))
+
+	// 3. Upload to TRADE via multipart form
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", fname)
+	_, _ = part.Write(fileData)
+	_ = mw.WriteField("currency", "USD")
+	mw.Close()
+
+	tradeReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		tradeURL+"/api/v1/bot-integration/owner/upload-supplier-offer", &buf)
+	tradeReq.Header.Set("Content-Type", mw.FormDataContentType())
+	tradeReq.Header.Set("X-API-Key", tradeBotKey)
+
+	tradeClient := &http.Client{Timeout: 60 * time.Second}
+	tradeResp, err := tradeClient.Do(tradeReq)
+	if err != nil {
+		b.sendText(chatID, "❌ Gagal upload ke TRADE: "+err.Error())
+		return
+	}
+	defer tradeResp.Body.Close()
+	tradeRaw, _ := io.ReadAll(tradeResp.Body)
+
+	if tradeResp.StatusCode != http.StatusOK {
+		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", tradeResp.StatusCode, string(tradeRaw)[:200]))
+		return
+	}
+
+	var result struct {
+		UploadID string `json:"upload_id"`
+	}
+	json.Unmarshal(tradeRaw, &result)
+
+	reply := fmt.Sprintf(
+		"✅ *File penawaran supplier diterima!*\n\n"+
+			"📄 File: %s\n"+
+			"🔑 Upload ID: %s\n"+
+			"📊 Status: sedang diproses (auto-mapping produk)\n\n"+
+			"Cek hasil di TRADE → *Penawaran Supplier* dalam beberapa menit.",
+		fname, result.UploadID,
+	)
+	b.sendText(chatID, reply)
 }
 
 // registerWebhook calls Telegram's setWebhook API so Telegram sends updates to

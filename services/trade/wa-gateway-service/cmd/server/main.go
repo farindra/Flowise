@@ -116,6 +116,15 @@ func main() {
 		}
 	}
 
+	// TRADE bot-integration client — optional, for owner supplier-offer uploads.
+	var tradeClient *client.TradeClient
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotAPIKey := os.Getenv("TRADE_BOT_API_KEY")
+	if tradeURL != "" && tradeBotAPIKey != "" {
+		tradeClient = client.NewTradeClient(tradeURL, tradeBotAPIKey)
+		log.Printf("TRADE client enabled: %s", tradeURL)
+	}
+
 	cache := state.NewCustomerCache(store, pricingClient)
 
 	wa, err := waclient.New(ctx, dataDir)
@@ -123,7 +132,7 @@ func main() {
 		log.Fatalf("failed to init whatsmeow client: %v", err)
 	}
 
-	r := router.New(wa.WA, store, cache, aiClient, flowiseClient, ownerFlowiseClient, ownerPhones, searchClient, searchURL)
+	r := router.New(wa.WA, store, cache, aiClient, flowiseClient, ownerFlowiseClient, ownerPhones, tradeClient, searchClient, searchURL)
 	wa.SetEventHandler(r.HandleEvent)
 
 	go func() {

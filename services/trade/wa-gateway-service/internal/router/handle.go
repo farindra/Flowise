@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -36,6 +37,11 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 	ctx := context.Background()
 	phone := evt.Info.Sender.User
 	body := strings.TrimSpace(msgBody(evt))
+
+	// Owner numbers: handle Excel document uploads → forward to TRADE supplier-offers.
+	if r.ownerPhones[phone] && r.trade != nil && hasExcelDoc(evt) {
+		return r.handleOwnerSupplierUpload(ctx, evt)
+	}
 
 	// Owner numbers: route all non-command text messages directly to owner assistant.
 	if r.ownerPhones[phone] && r.ownerFlowise != nil && body != "" && !strings.HasPrefix(body, "/") {
@@ -123,6 +129,65 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 
 	// Text messages.
 	return r.handleTextMessage(ctx, evt, body)
+}
+
+// hasExcelDoc returns true if the message carries an Excel document attachment.
+func hasExcelDoc(evt *events.Message) bool {
+	doc := evt.Message.GetDocumentMessage()
+	if doc == nil {
+		return false
+	}
+	mime := doc.GetMimetype()
+	fname := doc.GetFileName()
+	return mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+		mime == "application/vnd.ms-excel" ||
+		strings.HasSuffix(strings.ToLower(fname), ".xlsx") ||
+		strings.HasSuffix(strings.ToLower(fname), ".xls")
+}
+
+// handleOwnerSupplierUpload downloads an Excel document from an owner message
+// and uploads it to TRADE for background supplier-offer processing.
+func (r *Router) handleOwnerSupplierUpload(ctx context.Context, evt *events.Message) error {
+	phone := evt.Info.Sender.User
+	doc := evt.Message.GetDocumentMessage()
+	fname := doc.GetFileName()
+	if fname == "" {
+		fname = "penawaran-supplier.xlsx"
+	}
+
+	r.reply(ctx, evt, "⏳ Menerima file penawaran supplier... sedang diproses ke TRADE.")
+
+	go func() {
+		bgCtx := context.Background()
+
+		// Download the document via whatsmeow
+		data, err := r.wa.Download(bgCtx, doc)
+		if err != nil {
+			log.Printf("handleOwnerSupplierUpload: download error for %s: %v", phone, err)
+			r.reply(bgCtx, evt, "❌ Gagal mengunduh file. Coba kirim ulang.")
+			return
+		}
+
+		result, err := r.trade.UploadSupplierOffer(bgCtx, data, fname, "", "")
+		if err != nil {
+			log.Printf("handleOwnerSupplierUpload: upload error for %s: %v", phone, err)
+			r.reply(bgCtx, evt, "❌ Gagal upload ke TRADE: "+err.Error())
+			return
+		}
+
+		msg := fmt.Sprintf(
+			"✅ *File penawaran supplier diterima!*\n\n"+
+				"📄 File: %s\n"+
+				"🔑 Upload ID: %s\n"+
+				"📊 Status: sedang diproses (auto-mapping produk)\n\n"+
+				"Cek hasil di TRADE → *Penawaran Supplier* dalam beberapa menit.\n"+
+				"Gunakan `/owner ringkasan harga supplier` untuk lihat hasil analisa.",
+			fname, result.UploadID[:8]+"...",
+		)
+		r.reply(bgCtx, evt, msg)
+		_ = r.store.AddToHistory(phone, "assistant", msg)
+	}()
+	return nil
 }
 
 var fallbackProductCodeRe = regexp.MustCompile(`\b\d{2,}[\/\-]?\d{0,3}[A-Za-z0-9]*\b`)
