@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -151,6 +152,33 @@ func (b *Bot) handler(w http.ResponseWriter, r *http.Request) {
 	go b.processMessage(update.Message)
 }
 
+// parseSupplierReply tries to extract supplier name and currency from a reply
+// like "SUPPLIER: SANKO, CURRENCY: USD" or just "skip".
+func parseSupplierReply(text string) (supplierName, currency string, ok bool) {
+	t := strings.TrimSpace(text)
+	lower := strings.ToLower(t)
+	if lower == "skip" || lower == "auto" || lower == "-" {
+		return "", "USD", true
+	}
+	// Match "SUPPLIER: X, CURRENCY: Y" in any order/case
+	reSup := regexp.MustCompile(`(?i)supplier\s*:\s*([^,\n]+)`)
+	reCur := regexp.MustCompile(`(?i)currency\s*:\s*([A-Za-z]{3})`)
+	mSup := reSup.FindStringSubmatch(t)
+	mCur := reCur.FindStringSubmatch(t)
+	if mSup == nil && mCur == nil {
+		return "", "", false
+	}
+	if mSup != nil {
+		supplierName = strings.TrimSpace(mSup[1])
+	}
+	if mCur != nil {
+		currency = strings.ToUpper(strings.TrimSpace(mCur[1]))
+	} else {
+		currency = "USD"
+	}
+	return supplierName, currency, true
+}
+
 func (b *Bot) processMessage(msg *Message) {
 	chatID := msg.Chat.ID
 	sessionID := strconv.FormatInt(chatID, 10)
@@ -158,6 +186,23 @@ func (b *Bot) processMessage(msg *Message) {
 	// Guard: if ownerIDs is non-empty, deny users not in the list.
 	if len(b.ownerIDs) > 0 && (msg.From == nil || !b.ownerIDs[msg.From.ID]) {
 		b.sendText(chatID, "❌ Akses ditolak. Bot ini hanya untuk owner Ocean Bearings.")
+		return
+	}
+
+	// Check if this is a reply to a pending Excel upload prompt
+	if p := takePendingUpload(chatID); p != nil {
+		if time.Since(p.At) > 10*time.Minute {
+			b.sendText(chatID, "⏰ Upload expired. Kirim ulang file Excel-nya.")
+			return
+		}
+		supplierName, currency, ok := parseSupplierReply(msg.Text)
+		if !ok {
+			// Put it back and re-ask
+			setPendingUpload(chatID, p)
+			b.sendText(chatID, "❓ Format tidak dikenali. Balas dengan:\n`SUPPLIER: <nama>, CURRENCY: <USD/IDR/JPY/dll>`\n\nAtau ketik `skip` untuk auto-detect.")
+			return
+		}
+		go b.doUploadSupplierOffer(chatID, p, supplierName, currency)
 		return
 	}
 
@@ -272,8 +317,35 @@ func (b *Bot) isExcelDoc(doc *Document) bool {
 		strings.HasSuffix(strings.ToLower(doc.FileName), ".xls")
 }
 
-// processDocumentMessage handles Excel uploads from owner — downloads from Telegram
-// and forwards to TRADE supplier-offers API.
+// pendingUpload holds a downloaded Excel file waiting for supplier info.
+type pendingUpload struct {
+	FileData []byte
+	FileName string
+	At       time.Time
+}
+
+// pendingUploads maps chatID → pending upload (max ~5 min TTL).
+var (
+	pendingUploadsMu sync.Mutex
+	pendingUploads   = map[int64]*pendingUpload{}
+)
+
+func setPendingUpload(chatID int64, p *pendingUpload) {
+	pendingUploadsMu.Lock()
+	pendingUploads[chatID] = p
+	pendingUploadsMu.Unlock()
+}
+
+func takePendingUpload(chatID int64) *pendingUpload {
+	pendingUploadsMu.Lock()
+	defer pendingUploadsMu.Unlock()
+	p := pendingUploads[chatID]
+	delete(pendingUploads, chatID)
+	return p
+}
+
+// processDocumentMessage handles Excel uploads from owner — downloads from Telegram,
+// asks for supplier name + currency, then uploads to TRADE.
 func (b *Bot) processDocumentMessage(msg *Message) {
 	chatID := msg.Chat.ID
 	doc := msg.Document
@@ -290,9 +362,9 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 		return
 	}
 
-	b.sendText(chatID, "⏳ Mengunduh file penawaran supplier dari Telegram...")
+	b.sendText(chatID, "⏳ Mengunduh file dari Telegram...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// 1. getFile → get download path
@@ -327,14 +399,40 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 		fname = "penawaran-supplier.xlsx"
 	}
 
-	b.sendText(chatID, fmt.Sprintf("⏳ Mengupload *%s* ke TRADE untuk diproses...", fname))
+	// 3. Save pending and ask for supplier info
+	setPendingUpload(chatID, &pendingUpload{FileData: fileData, FileName: fname, At: time.Now()})
 
-	// 3. Upload to TRADE via multipart form
+	b.sendText(chatID, fmt.Sprintf(
+		"📄 File *%s* (%.1f KB) siap diupload.\n\n"+
+			"Balas dengan format:\n"+
+			"`SUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>`\n\n"+
+			"Contoh: `SUPPLIER: SANKO, CURRENCY: USD`\n\n"+
+			"Atau ketik `skip` untuk auto-detect dari file.",
+		fname, float64(len(fileData))/1024,
+	))
+}
+
+// doUploadSupplierOffer uploads the pending Excel file to TRADE with given supplier+currency.
+func (b *Bot) doUploadSupplierOffer(chatID int64, p *pendingUpload, supplierName, currency string) {
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotKey := os.Getenv("TRADE_BOT_API_KEY")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	b.sendText(chatID, fmt.Sprintf("⏳ Mengupload *%s* ke TRADE untuk diproses...", p.FileName))
+
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	part, _ := mw.CreateFormFile("file", fname)
-	_, _ = part.Write(fileData)
-	_ = mw.WriteField("currency", "USD")
+	part, _ := mw.CreateFormFile("file", p.FileName)
+	_, _ = part.Write(p.FileData)
+	if supplierName != "" {
+		_ = mw.WriteField("supplier_name", supplierName)
+	}
+	if currency == "" {
+		currency = "USD"
+	}
+	_ = mw.WriteField("currency", currency)
 	mw.Close()
 
 	tradeReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -342,7 +440,7 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 	tradeReq.Header.Set("Content-Type", mw.FormDataContentType())
 	tradeReq.Header.Set("X-API-Key", tradeBotKey)
 
-	tradeClient := &http.Client{Timeout: 60 * time.Second}
+	tradeClient := &http.Client{Timeout: 90 * time.Second}
 	tradeResp, err := tradeClient.Do(tradeReq)
 	if err != nil {
 		b.sendText(chatID, "❌ Gagal upload ke TRADE: "+err.Error())
@@ -352,7 +450,11 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 	tradeRaw, _ := io.ReadAll(tradeResp.Body)
 
 	if tradeResp.StatusCode != http.StatusOK {
-		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", tradeResp.StatusCode, string(tradeRaw)[:200]))
+		errMsg := string(tradeRaw)
+		if len(errMsg) > 300 {
+			errMsg = errMsg[:300]
+		}
+		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", tradeResp.StatusCode, errMsg))
 		return
 	}
 
@@ -364,10 +466,20 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 	reply := fmt.Sprintf(
 		"✅ *File penawaran supplier diterima!*\n\n"+
 			"📄 File: %s\n"+
-			"🔑 Upload ID: %s\n"+
-			"📊 Status: sedang diproses (auto-mapping produk)\n\n"+
+			"🏢 Supplier: %s\n"+
+			"💱 Currency: %s\n"+
+			"🔑 Upload ID: `%s`\n\n"+
+			"Proses auto-mapping produk sedang berjalan di background.\n"+
 			"Cek hasil di TRADE → *Penawaran Supplier* dalam beberapa menit.",
-		fname, result.UploadID,
+		p.FileName,
+		func() string {
+			if supplierName != "" {
+				return supplierName
+			}
+			return "_(auto-detect dari file)_"
+		}(),
+		currency,
+		result.UploadID,
 	)
 	b.sendText(chatID, reply)
 }
