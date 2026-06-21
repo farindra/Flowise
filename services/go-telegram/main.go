@@ -261,7 +261,7 @@ func (b *Bot) processMessage(msg *Message) {
 			case "trade":
 				go b.doTradeDataPreview(chatID, p)
 			case "permintaan":
-				b.sendText(chatID, "🚧 Fitur import *Permintaan Barang* sedang dalam pengembangan\\. Coming soon\\!")
+				go b.doUnrecordedItemsPreview(chatID, p)
 			default:
 				setPendingUpload(chatID, p)
 				b.sendText(chatID, "❓ Pilihan tidak dikenali\\. Balas:\n*1* \\- Penawaran Supplier\n*2* \\- Data Perdagangan\n*3* \\- Permintaan Barang")
@@ -278,6 +278,16 @@ func (b *Bot) processMessage(msg *Message) {
 			lower := strings.ToLower(strings.TrimSpace(msg.Text))
 			if lower == "ya" || lower == "yes" || lower == "lanjut" || lower == "ok" || lower == "import" {
 				go b.doTradeDataImport(chatID, p)
+			} else if lower == "batal" || lower == "cancel" || lower == "tidak" || lower == "no" {
+				b.sendText(chatID, "❌ Import dibatalkan\\.")
+			} else {
+				setPendingUpload(chatID, p)
+				b.sendText(chatID, "❓ Balas *ya* untuk import atau *batal* untuk membatalkan\\.")
+			}
+		case "permintaan_confirm":
+			lower := strings.ToLower(strings.TrimSpace(msg.Text))
+			if lower == "ya" || lower == "yes" || lower == "lanjut" || lower == "ok" || lower == "import" {
+				go b.doUnrecordedItemsImport(chatID, p)
 			} else if lower == "batal" || lower == "cancel" || lower == "tidak" || lower == "no" {
 				b.sendText(chatID, "❌ Import dibatalkan\\.")
 			} else {
@@ -658,6 +668,164 @@ func (b *Bot) doTradeDataImport(chatID int64, p *pendingUpload) {
 			"❌ Dilewati: *%d*\n\n"+
 			"Cek hasil di TRADE → *Data Perdagangan* dalam beberapa menit\\.",
 		escapeMarkdown(p.FileName), result.TotalRows, result.ValidRows, result.InvalidRows,
+	))
+}
+
+// unrecordedPreviewResponse mirrors the TRADE preview-unrecorded-items response.
+type unrecordedPreviewResponse struct {
+	TotalRows   int    `json:"total_rows"`
+	ValidRows   int    `json:"valid_rows"`
+	InvalidRows int    `json:"invalid_rows"`
+	HasNameCol  bool   `json:"has_name_col"`
+	Errors      []struct {
+		Row    int      `json:"row"`
+		Errors []string `json:"errors"`
+	} `json:"errors"`
+	Sample []map[string]string `json:"sample"`
+}
+
+// doUnrecordedItemsPreview sends file to TRADE preview and shows summary.
+func (b *Bot) doUnrecordedItemsPreview(chatID int64, p *pendingUpload) {
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotKey := os.Getenv("TRADE_BOT_API_KEY")
+
+	b.sendText(chatID, "⏳ Memvalidasi file permintaan barang\\.\\.\\.")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", p.FileName)
+	_, _ = part.Write(p.FileData)
+	mw.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		tradeURL+"/api/v1/bot-integration/owner/preview-unrecorded-items", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-API-Key", tradeBotKey)
+
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		b.sendText(chatID, "❌ Gagal koneksi ke TRADE: "+escapeMarkdown(err.Error()))
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		errMsg := string(raw)
+		if len(errMsg) > 300 {
+			errMsg = errMsg[:300]
+		}
+		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", resp.StatusCode, escapeMarkdown(errMsg)))
+		return
+	}
+
+	var pr unrecordedPreviewResponse
+	json.Unmarshal(raw, &pr)
+
+	var sb strings.Builder
+	sb.WriteString("📋 *Preview Permintaan Barang*\n\n")
+	sb.WriteString(fmt.Sprintf("📄 File: %s\n", escapeMarkdown(p.FileName)))
+	sb.WriteString(fmt.Sprintf("📝 Total baris: *%d*\n", pr.TotalRows))
+	sb.WriteString(fmt.Sprintf("✅ Valid: *%d*\n", pr.ValidRows))
+	if pr.InvalidRows > 0 {
+		sb.WriteString(fmt.Sprintf("❌ Baris tanpa nama barang: *%d*\n", pr.InvalidRows))
+	}
+
+	if !pr.HasNameCol {
+		sb.WriteString("\n⚠️ Kolom nama barang tidak ditemukan\\.\nKolom dikenali: *nama barang*, nama, item, kode, product\\_name\n")
+	} else if len(pr.Sample) > 0 {
+		sb.WriteString("\n*Contoh item:*\n")
+		for _, s := range pr.Sample {
+			line := "• " + escapeMarkdown(s["nama_barang"])
+			if s["merk"] != "" {
+				line += " \\(" + escapeMarkdown(s["merk"]) + "\\)"
+			}
+			if s["qty"] != "" && s["qty"] != "1" {
+				line += " x" + s["qty"]
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+
+	if len(pr.Errors) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠️ Baris kosong \\(%d\\):\n", pr.InvalidRows))
+		for i, e := range pr.Errors {
+			if i >= 3 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("• Baris %d: %s\n", e.Row, escapeMarkdown(strings.Join(e.Errors, ", "))))
+		}
+	}
+
+	canImport := pr.HasNameCol && pr.ValidRows > 0
+	if canImport {
+		sb.WriteString(fmt.Sprintf("\nBalas *ya* untuk tambah *%d item* ke Permintaan Barang TRADE, atau *batal*\\.", pr.ValidRows))
+		p.Step = "permintaan_confirm"
+		setPendingUpload(chatID, p)
+	} else {
+		sb.WriteString("\n❌ File tidak dapat diimport\\. Pastikan ada kolom nama barang\\.")
+	}
+	b.sendText(chatID, sb.String())
+}
+
+// doUnrecordedItemsImport uploads file to TRADE + triggers mapping.
+func (b *Bot) doUnrecordedItemsImport(chatID int64, p *pendingUpload) {
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotKey := os.Getenv("TRADE_BOT_API_KEY")
+
+	b.sendText(chatID, "⏳ Mengimport permintaan barang ke TRADE\\.\\.\\.")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", p.FileName)
+	_, _ = part.Write(p.FileData)
+	_ = mw.WriteField("source", "telegram-bot")
+	mw.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		tradeURL+"/api/v1/bot-integration/owner/import-unrecorded-items", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-API-Key", tradeBotKey)
+
+	resp, err := (&http.Client{Timeout: 120 * time.Second}).Do(req)
+	if err != nil {
+		b.sendText(chatID, "❌ Gagal koneksi ke TRADE: "+escapeMarkdown(err.Error()))
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		errMsg := string(raw)
+		if len(errMsg) > 300 {
+			errMsg = errMsg[:300]
+		}
+		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", resp.StatusCode, escapeMarkdown(errMsg)))
+		return
+	}
+
+	var result struct {
+		Created     int    `json:"created"`
+		InvalidRows int    `json:"invalid_rows"`
+		WeekLabel   string `json:"week_label"`
+	}
+	json.Unmarshal(raw, &result)
+
+	b.sendText(chatID, fmt.Sprintf(
+		"✅ *Permintaan Barang berhasil diimport\\!*\n\n"+
+			"📄 File: %s\n"+
+			"📝 Item ditambahkan: *%d*\n"+
+			"❌ Baris dilewati: *%d*\n"+
+			"📅 Minggu: %s\n\n"+
+			"🔄 Mapping otomatis sedang diproses di background\\.\n"+
+			"Cek hasil di TRADE → *Permintaan Barang*\\.",
+		escapeMarkdown(p.FileName), result.Created, result.InvalidRows, escapeMarkdown(result.WeekLabel),
 	))
 }
 

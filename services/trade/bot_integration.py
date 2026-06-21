@@ -661,3 +661,214 @@ async def bot_import_trade_data(
         "valid_rows": preview["valid_rows"],
         "invalid_rows": preview["invalid_rows"],
     }
+
+
+# ─── Owner: Permintaan Barang (Unrecorded Items) ──────────────────────────────
+
+_ITEM_NAME_KEYS = [
+    "nama barang", "nama_barang", "nama", "item", "barang",
+    "product_name", "productname", "kode barang", "kode", "code", "product_code",
+]
+_QTY_KEYS = ["qty", "quantity", "jumlah", "qty_request", "qty req", "qty/request"]
+_CUSTOMER_KEYS = ["customer", "pelanggan", "buyer", "customer_name", "nama customer"]
+_BRAND_KEYS = ["merk", "brand", "merek", "brand_name"]
+_KET_KEYS = ["keterangan", "ket", "notes", "remark", "description"]
+
+
+def _file_to_csv_bytes_unrecorded(content: bytes, fname: str) -> bytes:
+    """Convert Excel to CSV, or return CSV as-is."""
+    import io
+    import pandas as pd
+    lower = fname.lower()
+    if lower.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(io.BytesIO(content), dtype=str)
+        df.fillna("", inplace=True)
+        return df.to_csv(index=False).encode("utf-8")
+    return content
+
+
+def _preview_unrecorded_csv(csv_bytes: bytes) -> dict:
+    """Dry-run parse of unrecorded items CSV — returns summary."""
+    import csv, io
+
+    text = csv_bytes.decode("utf-8", errors="ignore").replace("﻿", "")
+    lines = text.splitlines()
+    header_idx = 0
+    for i, line in enumerate(lines[:10]):
+        nl = (line or "").strip().lower()
+        if any(k in nl for k in ["nama barang", "product_name", "nama_barang", "kode barang"]):
+            header_idx = i
+            break
+    usable = "\n".join(lines[header_idx:])
+    try:
+        dialect = csv.Sniffer().sniff(usable[:10000], delimiters=",;\t|")
+        reader = csv.DictReader(io.StringIO(usable), dialect=dialect)
+    except Exception:
+        reader = csv.DictReader(io.StringIO(usable), delimiter=",")
+
+    rows = list(reader)
+    if not rows:
+        return {"total_rows": 0, "valid_rows": 0, "invalid_rows": 0,
+                "columns_found": [], "has_name_col": False, "errors": [], "sample": []}
+
+    cols = {(k or "").strip().lower() for k in rows[0].keys()}
+    has_name = any(k in cols for k in _ITEM_NAME_KEYS)
+
+    valid = 0
+    errors = []
+    sample = []
+    for i, row in enumerate(rows, start=2):
+        rl = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        name = next((rl.get(k, "") for k in _ITEM_NAME_KEYS if rl.get(k, "")), "")
+        if not name:
+            errors.append({"row": i, "errors": ["nama barang kosong"]})
+        else:
+            valid += 1
+            if len(sample) < 3:
+                qty = next((rl.get(k, "") for k in _QTY_KEYS if rl.get(k, "")), "1")
+                sample.append({
+                    "nama_barang": name,
+                    "merk": next((rl.get(k, "") for k in _BRAND_KEYS if rl.get(k, "")), ""),
+                    "qty": qty,
+                    "customer": next((rl.get(k, "") for k in _CUSTOMER_KEYS if rl.get(k, "")), ""),
+                })
+
+    return {
+        "total_rows": len(rows),
+        "valid_rows": valid,
+        "invalid_rows": len(rows) - valid,
+        "columns_found": sorted(cols),
+        "has_name_col": has_name,
+        "errors": errors[:10],
+        "sample": sample,
+    }
+
+
+@router.post("/owner/preview-unrecorded-items")
+async def bot_preview_unrecorded_items(
+    file: UploadFile = File(...),
+    _: str = Depends(verify_bot_api_key),
+):
+    """
+    Dry-run preview untuk import Permintaan Barang dari bot (WA/Telegram).
+    Accepts .xlsx, .xls, atau .csv — Excel dikonversi ke CSV otomatis.
+    Returns: total baris, kolom ditemukan, valid/invalid count, sample rows.
+    """
+    fname = file.filename or "permintaan.csv"
+    if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="File harus .xlsx, .xls, atau .csv")
+
+    content = await file.read()
+    try:
+        csv_bytes = _file_to_csv_bytes_unrecorded(content, fname)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Gagal membaca file: {e}")
+
+    preview = _preview_unrecorded_csv(csv_bytes)
+    preview["filename"] = fname
+    return preview
+
+
+@router.post("/owner/import-unrecorded-items")
+async def bot_import_unrecorded_items(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    source: str = Form("bot"),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_bot_api_key),
+):
+    """
+    Import Permintaan Barang dari bot (WA/Telegram) + auto-trigger mapping.
+    Accepts .xlsx, .xls, atau .csv. Sumber default 'bot' (bisa 'wa-bot' / 'telegram-bot').
+    """
+    fname = file.filename or "permintaan.csv"
+    if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="File harus .xlsx, .xls, atau .csv")
+
+    content = await file.read()
+    try:
+        csv_bytes = _file_to_csv_bytes_unrecorded(content, fname)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Gagal membaca file: {e}")
+
+    preview = _preview_unrecorded_csv(csv_bytes)
+
+    import csv as _csv, io as _io
+    from datetime import date as _date
+    from src.models.database import UnrecordedItem as DBUnrecordedItem
+
+    today = _date.today()
+    iso_year, iso_week, _ = today.isocalendar()
+    week_label = f"{iso_year}-W{iso_week:02d}"
+    final_source = (source or "bot").strip()
+
+    text = csv_bytes.decode("utf-8", errors="ignore").replace("﻿", "")
+    lines = text.splitlines()
+    header_idx = 0
+    for i, line in enumerate(lines[:10]):
+        nl = (line or "").strip().lower()
+        if any(k in nl for k in ["nama barang", "product_name", "nama_barang", "kode barang"]):
+            header_idx = i
+            break
+    usable = "\n".join(lines[header_idx:])
+    try:
+        dialect = _csv.Sniffer().sniff(usable[:10000], delimiters=",;\t|")
+        reader = _csv.DictReader(_io.StringIO(usable), dialect=dialect)
+    except Exception:
+        reader = _csv.DictReader(_io.StringIO(usable), delimiter=",")
+
+    created = 0
+    for row in reader:
+        rl = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        name = next((rl.get(k, "") for k in _ITEM_NAME_KEYS if rl.get(k, "")), "")
+        if not name:
+            continue
+
+        qty_val = next((rl.get(k, "") for k in _QTY_KEYS if rl.get(k, "")), "1")
+        try:
+            qty = max(1, int(float(qty_val.replace(",", ".") if qty_val else "1")))
+        except Exception:
+            qty = 1
+
+        customer = next((rl.get(k, "") for k in _CUSTOMER_KEYS if rl.get(k, "")), "")
+        merk = next((rl.get(k, "") for k in _BRAND_KEYS if rl.get(k, "")), "")
+        ket = next((rl.get(k, "") for k in _KET_KEYS if rl.get(k, "")), "")
+
+        notes_parts = []
+        if customer: notes_parts.append(f"customer: {customer}")
+        if merk:     notes_parts.append(f"merk: {merk}")
+        if ket:      notes_parts.append(f"ket: {ket}")
+
+        db.add(DBUnrecordedItem(
+            item_name=name,
+            source=final_source,
+            frequency=qty,
+            matched_trade_data=False,
+            status="pending",
+            week_label=week_label,
+            recorded_date=today,
+            notes="; ".join(notes_parts) or None,
+        ))
+        created += 1
+
+    await db.commit()
+
+    # Auto-trigger mapping for newly added pending items
+    async def _trigger():
+        try:
+            from src.api.routes.unrecorded_items import _process_unrecorded_items_mapping
+            await _process_unrecorded_items_mapping(limit=500, force_reprocess=False)
+        except Exception as exc:
+            logger.warning(f"bot_import_unrecorded_items mapping trigger error: {exc}")
+
+    background_tasks.add_task(_trigger)
+
+    return {
+        "status": "ok",
+        "created": created,
+        "total_rows": preview["total_rows"],
+        "invalid_rows": preview["invalid_rows"],
+        "week_label": week_label,
+        "source": final_source,
+        "message": f"{created} item permintaan barang ditambahkan (minggu {week_label}). Mapping diproses otomatis di background.",
+    }

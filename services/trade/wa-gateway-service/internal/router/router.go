@@ -44,7 +44,7 @@ type ActiveConv struct {
 }
 
 // pendingUpload holds a downloaded Excel file waiting for user confirmation.
-// step: "intent" → file purpose; "supplier_info" → name+currency; "trade_confirm" → ya/batal after preview.
+// step: "intent" → file purpose; "supplier_info" → name+currency; "trade_confirm" / "permintaan_confirm" → ya/batal after preview.
 type pendingUpload struct {
 	fileData []byte
 	fileName string

@@ -62,7 +62,7 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 				case "trade":
 					go r.doTradeDataPreview(ctx, evt, p)
 				case "permintaan":
-					r.reply(ctx, evt, "🚧 Fitur import *Permintaan Barang* sedang dalam pengembangan. Coming soon!")
+					go r.doUnrecordedItemsPreview(ctx, evt, p)
 				default:
 					r.setPendingUpload(phone, p)
 					r.reply(ctx, evt, "❓ Pilihan tidak dikenali. Balas:\n*1* - Penawaran Supplier\n*2* - Data Perdagangan\n*3* - Permintaan Barang")
@@ -79,6 +79,16 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 				lower := strings.ToLower(strings.TrimSpace(body))
 				if lower == "ya" || lower == "yes" || lower == "lanjut" || lower == "ok" || lower == "import" {
 					go r.doTradeDataImport(ctx, evt, p)
+				} else if lower == "batal" || lower == "cancel" || lower == "tidak" || lower == "no" {
+					r.reply(ctx, evt, "❌ Import dibatalkan.")
+				} else {
+					r.setPendingUpload(phone, p)
+					r.reply(ctx, evt, "❓ Balas *ya* untuk import atau *batal* untuk membatalkan.")
+				}
+			case "permintaan_confirm":
+				lower := strings.ToLower(strings.TrimSpace(body))
+				if lower == "ya" || lower == "yes" || lower == "lanjut" || lower == "ok" || lower == "import" {
+					go r.doUnrecordedItemsImport(ctx, evt, p)
 				} else if lower == "batal" || lower == "cancel" || lower == "tidak" || lower == "no" {
 					r.reply(ctx, evt, "❌ Import dibatalkan.")
 				} else {
@@ -428,6 +438,96 @@ func (r *Router) doTradeDataImport(ctx context.Context, evt *events.Message, p *
 			"❌ Dilewati: *%d*\n\n"+
 			"Cek hasil di TRADE → *Data Perdagangan* dalam beberapa menit.",
 		p.fileName, result.TotalRows, result.ValidRows, result.InvalidRows,
+	)
+	r.reply(ctx, evt, msg)
+	_ = r.store.AddToHistory(phone, "assistant", msg)
+}
+
+// doUnrecordedItemsPreview sends file to TRADE preview endpoint and shows summary.
+func (r *Router) doUnrecordedItemsPreview(ctx context.Context, evt *events.Message, p *pendingUpload) {
+	phone := evt.Info.Sender.User
+	r.reply(ctx, evt, "⏳ Memvalidasi file permintaan barang...")
+
+	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	pr, err := r.trade.PreviewUnrecordedItems(reqCtx, p.fileData, p.fileName)
+	if err != nil {
+		r.reply(ctx, evt, "❌ Gagal validasi: "+err.Error())
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📋 *Preview Permintaan Barang*\n\n")
+	sb.WriteString(fmt.Sprintf("📄 File: %s\n", p.fileName))
+	sb.WriteString(fmt.Sprintf("📝 Total baris: *%d*\n", pr.TotalRows))
+	sb.WriteString(fmt.Sprintf("✅ Valid: *%d*\n", pr.ValidRows))
+	if pr.InvalidRows > 0 {
+		sb.WriteString(fmt.Sprintf("❌ Baris tanpa nama barang: *%d*\n", pr.InvalidRows))
+	}
+
+	if !pr.HasNameCol {
+		sb.WriteString("\n⚠️ Kolom nama barang tidak ditemukan.\nKolom yang dikenali: *nama barang*, nama, item, kode, product_name\n")
+	} else if len(pr.Sample) > 0 {
+		sb.WriteString("\n*Contoh item:*\n")
+		for _, s := range pr.Sample {
+			line := "• " + s["nama_barang"]
+			if s["merk"] != "" {
+				line += " (" + s["merk"] + ")"
+			}
+			if s["qty"] != "" && s["qty"] != "1" {
+				line += " x" + s["qty"]
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+
+	if len(pr.Errors) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠️ Baris kosong (%d):\n", pr.InvalidRows))
+		for i, e := range pr.Errors {
+			if i >= 3 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("• Baris %d: %s\n", e.Row, strings.Join(e.Errors, ", ")))
+		}
+	}
+
+	canImport := pr.HasNameCol && pr.ValidRows > 0
+	if canImport {
+		sb.WriteString(fmt.Sprintf("\nBalas *ya* untuk tambah *%d item* ke Permintaan Barang TRADE, atau *batal*.", pr.ValidRows))
+		p.step = "permintaan_confirm"
+		r.setPendingUpload(phone, p)
+	} else {
+		sb.WriteString("\n❌ File tidak dapat diimport. Pastikan ada kolom nama barang.")
+	}
+
+	r.reply(ctx, evt, sb.String())
+	_ = r.store.AddToHistory(phone, "assistant", sb.String())
+}
+
+// doUnrecordedItemsImport uploads file to TRADE + auto-triggers mapping.
+func (r *Router) doUnrecordedItemsImport(ctx context.Context, evt *events.Message, p *pendingUpload) {
+	phone := evt.Info.Sender.User
+	r.reply(ctx, evt, "⏳ Mengimport permintaan barang ke TRADE...")
+
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	result, err := r.trade.ImportUnrecordedItems(reqCtx, p.fileData, p.fileName, "wa-bot")
+	if err != nil {
+		r.reply(ctx, evt, "❌ Gagal import ke TRADE: "+err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf(
+		"✅ *Permintaan Barang berhasil diimport!*\n\n"+
+			"📄 File: %s\n"+
+			"📝 Item ditambahkan: *%d*\n"+
+			"❌ Baris dilewati: *%d*\n"+
+			"📅 Minggu: %s\n\n"+
+			"🔄 Mapping otomatis sedang diproses di background.\n"+
+			"Cek hasil di TRADE → *Permintaan Barang*.",
+		p.fileName, result.Created, result.InvalidRows, result.WeekLabel,
 	)
 	r.reply(ctx, evt, msg)
 	_ = r.store.AddToHistory(phone, "assistant", msg)
