@@ -44,20 +44,40 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 		return r.handleOwnerSupplierUpload(ctx, evt)
 	}
 
-	// Owner numbers: if there's a pending upload, intercept text as supplier+currency reply.
+	// Owner numbers: if there's a pending upload, intercept text as a step reply.
 	if r.ownerPhones[phone] && r.trade != nil {
 		if p := r.takePendingUpload(phone); p != nil {
 			if time.Since(p.at) > 10*time.Minute {
 				r.reply(ctx, evt, "⏰ Upload expired. Kirim ulang file Excel-nya.")
 				return nil
 			}
-			supplierName, currency, ok := parseSupplierReply(body)
-			if !ok {
-				r.setPendingUpload(phone, p) // put back
-				r.reply(ctx, evt, "❓ Format tidak dikenali. Balas dengan:\nSUPPLIER: <nama>, CURRENCY: <USD/IDR/JPY/dll>\n\nAtau ketik skip untuk auto-detect.")
-				return nil
+			switch p.step {
+			case "intent":
+				intent := parseFileIntent(body)
+				switch intent {
+				case "supplier":
+					p.step = "supplier_info"
+					r.setPendingUpload(phone, p)
+					r.reply(ctx, evt, fmt.Sprintf(
+						"✅ Penawaran Supplier.\n\nBalas dengan format:\nSUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>\n\nContoh: SUPPLIER: SANKO, CURRENCY: USD\n\nAtau ketik *skip* untuk auto-detect dari file.",
+					))
+				case "trade":
+					r.reply(ctx, evt, "🚧 Fitur import *Data Perdagangan* sedang dalam pengembangan. Coming soon!")
+				case "permintaan":
+					r.reply(ctx, evt, "🚧 Fitur import *Permintaan Barang* sedang dalam pengembangan. Coming soon!")
+				default:
+					r.setPendingUpload(phone, p) // put back, re-ask
+					r.reply(ctx, evt, "❓ Pilihan tidak dikenali. Balas:\n*1* - Penawaran Supplier\n*2* - Data Perdagangan\n*3* - Permintaan Barang")
+				}
+			case "supplier_info":
+				supplierName, currency, ok := parseSupplierReply(body)
+				if !ok {
+					r.setPendingUpload(phone, p)
+					r.reply(ctx, evt, "❓ Format tidak dikenali. Balas dengan:\nSUPPLIER: <nama>, CURRENCY: <USD/IDR/JPY/dll>\n\nAtau ketik *skip* untuk auto-detect.")
+					return nil
+				}
+				go r.doUploadSupplierOffer(ctx, evt, p, supplierName, currency)
 			}
-			go r.doUploadSupplierOffer(ctx, evt, p, supplierName, currency)
 			return nil
 		}
 	}
@@ -190,14 +210,68 @@ func parseSupplierReply(text string) (supplierName, currency string, ok bool) {
 	return supplierName, currency, true
 }
 
-// handleOwnerSupplierUpload downloads an Excel doc and asks the owner for
-// supplier name + currency before uploading to TRADE.
+// detectFileIntent guesses file purpose from the filename (best-effort).
+// Returns "supplier", "trade", "permintaan", or "" (unknown).
+func detectFileIntent(fname string) string {
+	lower := strings.ToLower(fname)
+	if containsAny(lower, "quote", "penawaran", "harga", "price", "offer", "supplier") {
+		return "supplier"
+	}
+	if containsAny(lower, "trade", "perdagangan", "transaksi", "sales", "penjualan") {
+		return "trade"
+	}
+	if containsAny(lower, "request", "permintaan", "indent", "po ", "purchase") {
+		return "permintaan"
+	}
+	return ""
+}
+
+func containsAny(s string, keywords ...string) bool {
+	for _, k := range keywords {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseFileIntent parses the owner's reply to the "file ini untuk apa?" prompt.
+func parseFileIntent(reply string) string {
+	lower := strings.TrimSpace(strings.ToLower(reply))
+	if lower == "1" || containsAny(lower, "penawaran", "supplier", "harga", "price", "quote", "offer") {
+		return "supplier"
+	}
+	if lower == "2" || containsAny(lower, "perdagangan", "trade", "transaksi", "sales") {
+		return "trade"
+	}
+	if lower == "3" || containsAny(lower, "permintaan", "request", "indent", "po", "purchase") {
+		return "permintaan"
+	}
+	return ""
+}
+
+// intentLabel returns a human-readable label for a detected intent.
+func intentLabel(intent string) string {
+	switch intent {
+	case "supplier":
+		return "Penawaran Supplier"
+	case "trade":
+		return "Data Perdagangan"
+	case "permintaan":
+		return "Permintaan Barang"
+	default:
+		return ""
+	}
+}
+
+// handleOwnerSupplierUpload downloads an Excel doc, detects intent from filename,
+// then asks the owner to confirm or choose the correct purpose.
 func (r *Router) handleOwnerSupplierUpload(ctx context.Context, evt *events.Message) error {
 	phone := evt.Info.Sender.User
 	doc := evt.Message.GetDocumentMessage()
 	fname := doc.GetFileName()
 	if fname == "" {
-		fname = "penawaran-supplier.xlsx"
+		fname = "upload.xlsx"
 	}
 
 	r.reply(ctx, evt, "⏳ Mengunduh file dari WhatsApp...")
@@ -211,16 +285,28 @@ func (r *Router) handleOwnerSupplierUpload(ctx context.Context, evt *events.Mess
 			return
 		}
 
-		r.setPendingUpload(phone, &pendingUpload{fileData: data, fileName: fname, at: time.Now()})
+		hint := detectFileIntent(fname)
+		r.setPendingUpload(phone, &pendingUpload{fileData: data, fileName: fname, at: time.Now(), step: "intent"})
 
-		msg := fmt.Sprintf(
-			"📄 File *%s* (%.1f KB) siap diupload.\n\n"+
-				"Balas dengan format:\n"+
-				"SUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>\n\n"+
-				"Contoh: SUPPLIER: SANKO, CURRENCY: USD\n\n"+
-				"Atau ketik *skip* untuk auto-detect dari file.",
-			fname, float64(len(data))/1024,
-		)
+		var msg string
+		if hint != "" {
+			msg = fmt.Sprintf(
+				"📄 File *%s* (%.1f KB) terdeteksi sebagai *%s*.\n\n"+
+					"Balas untuk konfirmasi:\n"+
+					"*1* - Penawaran Supplier\n"+
+					"*2* - Data Perdagangan\n"+
+					"*3* - Permintaan Barang",
+				fname, float64(len(data))/1024, intentLabel(hint),
+			)
+		} else {
+			msg = fmt.Sprintf(
+				"📄 File *%s* (%.1f KB) diterima.\n\nFile ini untuk apa?\n\n"+
+					"*1* - Penawaran Supplier\n"+
+					"*2* - Data Perdagangan\n"+
+					"*3* - Permintaan Barang",
+				fname, float64(len(data))/1024,
+			)
+		}
 		r.reply(bgCtx, evt, msg)
 	}()
 	return nil

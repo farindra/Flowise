@@ -152,6 +152,61 @@ func (b *Bot) handler(w http.ResponseWriter, r *http.Request) {
 	go b.processMessage(update.Message)
 }
 
+// detectFileIntent guesses file purpose from the filename.
+func detectFileIntent(fname string) string {
+	lower := strings.ToLower(fname)
+	for _, k := range []string{"quote", "penawaran", "harga", "price", "offer", "supplier"} {
+		if strings.Contains(lower, k) {
+			return "supplier"
+		}
+	}
+	for _, k := range []string{"trade", "perdagangan", "transaksi", "sales", "penjualan"} {
+		if strings.Contains(lower, k) {
+			return "trade"
+		}
+	}
+	for _, k := range []string{"request", "permintaan", "indent", "po ", "purchase"} {
+		if strings.Contains(lower, k) {
+			return "permintaan"
+		}
+	}
+	return ""
+}
+
+// intentLabel returns a human-readable label for a detected intent.
+func intentLabel(intent string) string {
+	switch intent {
+	case "supplier":
+		return "Penawaran Supplier"
+	case "trade":
+		return "Data Perdagangan"
+	case "permintaan":
+		return "Permintaan Barang"
+	}
+	return ""
+}
+
+// parseFileIntent parses the owner's reply to the "file ini untuk apa?" prompt.
+func parseFileIntent(reply string) string {
+	lower := strings.TrimSpace(strings.ToLower(reply))
+	for _, k := range []string{"1", "penawaran", "supplier", "harga", "price", "quote", "offer"} {
+		if lower == k || strings.Contains(lower, k) {
+			return "supplier"
+		}
+	}
+	for _, k := range []string{"2", "perdagangan", "trade", "transaksi", "sales"} {
+		if lower == k || strings.Contains(lower, k) {
+			return "trade"
+		}
+	}
+	for _, k := range []string{"3", "permintaan", "request", "indent", "purchase"} {
+		if lower == k || strings.Contains(lower, k) {
+			return "permintaan"
+		}
+	}
+	return ""
+}
+
 // parseSupplierReply tries to extract supplier name and currency from a reply
 // like "SUPPLIER: SANKO, CURRENCY: USD" or just "skip".
 func parseSupplierReply(text string) (supplierName, currency string, ok bool) {
@@ -195,14 +250,31 @@ func (b *Bot) processMessage(msg *Message) {
 			b.sendText(chatID, "⏰ Upload expired. Kirim ulang file Excel-nya.")
 			return
 		}
-		supplierName, currency, ok := parseSupplierReply(msg.Text)
-		if !ok {
-			// Put it back and re-ask
-			setPendingUpload(chatID, p)
-			b.sendText(chatID, "❓ Format tidak dikenali. Balas dengan:\n`SUPPLIER: <nama>, CURRENCY: <USD/IDR/JPY/dll>`\n\nAtau ketik `skip` untuk auto-detect.")
-			return
+		switch p.Step {
+		case "intent":
+			intent := parseFileIntent(msg.Text)
+			switch intent {
+			case "supplier":
+				p.Step = "supplier_info"
+				setPendingUpload(chatID, p)
+				b.sendText(chatID, "✅ Penawaran Supplier\\.\n\nBalas dengan format:\n`SUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>`\n\nContoh: `SUPPLIER: SANKO, CURRENCY: USD`\n\nAtau ketik `skip` untuk auto\\-detect dari file\\.")
+			case "trade":
+				b.sendText(chatID, "🚧 Fitur import *Data Perdagangan* sedang dalam pengembangan\\. Coming soon\\!")
+			case "permintaan":
+				b.sendText(chatID, "🚧 Fitur import *Permintaan Barang* sedang dalam pengembangan\\. Coming soon\\!")
+			default:
+				setPendingUpload(chatID, p)
+				b.sendText(chatID, "❓ Pilihan tidak dikenali\\. Balas:\n*1* \\- Penawaran Supplier\n*2* \\- Data Perdagangan\n*3* \\- Permintaan Barang")
+			}
+		case "supplier_info":
+			supplierName, currency, ok := parseSupplierReply(msg.Text)
+			if !ok {
+				setPendingUpload(chatID, p)
+				b.sendText(chatID, "❓ Format tidak dikenali\\. Balas dengan:\n`SUPPLIER: <nama>, CURRENCY: <USD/IDR/JPY/dll>`\n\nAtau ketik `skip` untuk auto\\-detect\\.")
+				return
+			}
+			go b.doUploadSupplierOffer(chatID, p, supplierName, currency)
 		}
-		go b.doUploadSupplierOffer(chatID, p, supplierName, currency)
 		return
 	}
 
@@ -317,11 +389,13 @@ func (b *Bot) isExcelDoc(doc *Document) bool {
 		strings.HasSuffix(strings.ToLower(doc.FileName), ".xls")
 }
 
-// pendingUpload holds a downloaded Excel file waiting for supplier info.
+// pendingUpload holds a downloaded Excel file waiting for user confirmation.
+// Step: "intent" → waiting for file purpose; "supplier_info" → waiting for name+currency.
 type pendingUpload struct {
 	FileData []byte
 	FileName string
 	At       time.Time
+	Step     string // "intent" or "supplier_info"
 }
 
 // pendingUploads maps chatID → pending upload (max ~5 min TTL).
@@ -399,17 +473,23 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 		fname = "penawaran-supplier.xlsx"
 	}
 
-	// 3. Save pending and ask for supplier info
-	setPendingUpload(chatID, &pendingUpload{FileData: fileData, FileName: fname, At: time.Now()})
+	// 3. Save pending and ask intent
+	setPendingUpload(chatID, &pendingUpload{FileData: fileData, FileName: fname, At: time.Now(), Step: "intent"})
 
-	b.sendText(chatID, fmt.Sprintf(
-		"📄 File *%s* (%.1f KB) siap diupload.\n\n"+
-			"Balas dengan format:\n"+
-			"`SUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>`\n\n"+
-			"Contoh: `SUPPLIER: SANKO, CURRENCY: USD`\n\n"+
-			"Atau ketik `skip` untuk auto-detect dari file.",
-		fname, float64(len(fileData))/1024,
-	))
+	hint := detectFileIntent(fname)
+	var prompt string
+	if hint != "" {
+		prompt = fmt.Sprintf(
+			"📄 File *%s* (%.1f KB) terdeteksi sebagai *%s*.\n\nBalas untuk konfirmasi:\n*1* \\- Penawaran Supplier\n*2* \\- Data Perdagangan\n*3* \\- Permintaan Barang",
+			fname, float64(len(fileData))/1024, intentLabel(hint),
+		)
+	} else {
+		prompt = fmt.Sprintf(
+			"📄 File *%s* (%.1f KB) diterima\\.\n\nFile ini untuk apa?\n\n*1* \\- Penawaran Supplier\n*2* \\- Data Perdagangan\n*3* \\- Permintaan Barang",
+			fname, float64(len(fileData))/1024,
+		)
+	}
+	b.sendText(chatID, prompt)
 }
 
 // doUploadSupplierOffer uploads the pending Excel file to TRADE with given supplier+currency.
