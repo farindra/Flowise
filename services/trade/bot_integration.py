@@ -373,3 +373,291 @@ async def bot_upload_supplier_offer(
         "supplier_name": supplier_name,
         "currency": currency,
     }
+
+
+# ─── Owner: Trade Data Import (Excel/CSV) ─────────────────────────────────────
+
+TRADE_REQUIRED_COLS = {"trade_date", "supplier_name", "product_keyword", "currency"}
+TRADE_PRICE_COLS   = {"price_per_unit", "price", "trade_amount"}
+TRADE_OPTIONAL_COLS = {"buyer_name", "hs_code", "brand", "quantity", "quantity_unit",
+                        "origin_country_code", "destination_country_code"}
+
+def _file_to_csv_bytes(content: bytes, fname: str) -> bytes:
+    """Convert Excel or CSV bytes to UTF-8 CSV bytes."""
+    import io
+    import pandas as pd
+
+    lower = fname.lower()
+    if lower.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(io.BytesIO(content), dtype=str)
+        df.fillna("", inplace=True)
+        return df.to_csv(index=False).encode("utf-8")
+    # Already CSV
+    return content
+
+
+def _preview_csv(csv_bytes: bytes) -> dict:
+    """Parse CSV bytes and return a dry-run preview dict."""
+    import csv
+    import io
+
+    text = csv_bytes.decode("utf-8", errors="ignore").replace("﻿", "")
+    sample = text[:10000]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    except Exception:
+        reader = csv.DictReader(io.StringIO(text), delimiter=",")
+
+    rows = list(reader)
+    if not rows:
+        return {"total_rows": 0, "valid_rows": 0, "invalid_rows": 0,
+                "columns_found": [], "missing_required": list(TRADE_REQUIRED_COLS),
+                "has_price": False, "errors": [], "sample": []}
+
+    cols_found = {c.strip().lower() for c in (rows[0].keys() if rows else [])}
+    missing_required = [c for c in sorted(TRADE_REQUIRED_COLS) if c not in cols_found]
+    has_price = bool(cols_found & TRADE_PRICE_COLS)
+
+    errors = []
+    valid = 0
+    for i, row in enumerate(rows, start=2):
+        row_errors = []
+        for col in TRADE_REQUIRED_COLS:
+            val = (row.get(col) or "").strip()
+            if not val:
+                row_errors.append(f"{col} kosong")
+        price_val = ""
+        for pc in TRADE_PRICE_COLS:
+            price_val = (row.get(pc) or "").strip()
+            if price_val:
+                break
+        if not price_val:
+            row_errors.append("price_per_unit/trade_amount kosong")
+        if row_errors:
+            errors.append({"row": i, "errors": row_errors})
+        else:
+            valid += 1
+
+    # Sample: first 3 valid rows, compact
+    sample_rows = []
+    for row in rows[:3]:
+        sample_rows.append({
+            "trade_date":      (row.get("trade_date") or "").strip(),
+            "supplier_name":   (row.get("supplier_name") or "").strip(),
+            "product_keyword": (row.get("product_keyword") or "").strip(),
+            "currency":        (row.get("currency") or "").strip(),
+            "price":           next((row.get(c, "").strip() for c in TRADE_PRICE_COLS if row.get(c, "").strip()), ""),
+        })
+
+    return {
+        "total_rows":      len(rows),
+        "valid_rows":      valid,
+        "invalid_rows":    len(rows) - valid,
+        "columns_found":   sorted(cols_found),
+        "missing_required": missing_required,
+        "has_price":       has_price,
+        "errors":          errors[:10],   # max 10 errors in preview
+        "sample":          sample_rows,
+    }
+
+
+@router.post("/owner/preview-trade-data")
+async def bot_preview_trade_data(
+    file: UploadFile = File(...),
+    _: str = Depends(verify_bot_api_key),
+):
+    """
+    Dry-run preview untuk import trade data dari bot (WA/Telegram).
+    Accepts .xlsx, .xls, atau .csv — Excel dikonversi ke CSV otomatis.
+    Returns: total baris, kolom ditemukan, missing required, errors per baris (max 10).
+    """
+    fname = file.filename or "trade.csv"
+    lower = fname.lower()
+    if not lower.endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="File harus .xlsx, .xls, atau .csv")
+
+    content = await file.read()
+    try:
+        csv_bytes = _file_to_csv_bytes(content, fname)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Gagal membaca file: {e}")
+
+    preview = _preview_csv(csv_bytes)
+    preview["filename"] = fname
+    preview["csv_size_kb"] = round(len(csv_bytes) / 1024, 1)
+    return preview
+
+
+@router.post("/owner/import-trade-data")
+async def bot_import_trade_data(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_bot_api_key),
+):
+    """
+    Import trade data dari bot (WA/Telegram) setelah owner konfirmasi preview.
+    Accepts .xlsx, .xls, atau .csv — Excel dikonversi ke CSV otomatis.
+    Calls the same import logic as the UI (/trade/import) dengan admin user (id=2).
+    """
+    fname = file.filename or "trade.csv"
+    lower = fname.lower()
+    if not lower.endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="File harus .xlsx, .xls, atau .csv")
+
+    content = await file.read()
+    try:
+        csv_bytes = _file_to_csv_bytes(content, fname)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Gagal membaca file: {e}")
+
+    # Write CSV to temp file for the import service
+    import_id = str(uuid4())
+    csv_fname = fname.rsplit(".", 1)[0] + ".csv"
+    tmp_path = os.path.join(tempfile.gettempdir(), f"{import_id}_{csv_fname}")
+    with open(tmp_path, "wb") as f:
+        f.write(csv_bytes)
+
+    # Reuse the existing import logic via UploadFile-compatible wrapper
+    import io as _io
+    from fastapi import UploadFile as _UF
+    from starlette.datastructures import UploadFile as _SUF
+
+    # Call import route logic directly (avoid HTTP round-trip)
+    async def _run_import():
+        try:
+            import csv as _csv
+            from datetime import datetime as _dt
+            from decimal import Decimal
+            from src.services.exchange_rate_service import ExchangeRateService
+            from src.models.database import TradeData
+
+            csv_text = csv_bytes.decode("utf-8", errors="ignore").replace("﻿", "")
+            sample = csv_text[:10000]
+            try:
+                dialect = _csv.Sniffer().sniff(sample, delimiters=",;\t|")
+                reader = _csv.DictReader(_io.StringIO(csv_text), dialect=dialect)
+            except Exception:
+                reader = _csv.DictReader(_io.StringIO(csv_text), delimiter=",")
+
+            rate_service = ExchangeRateService()
+            rate_memo: dict = {}
+
+            async def _get_rate(from_cur, to_cur, target_date):
+                key = (from_cur, to_cur, str(target_date))
+                if key in rate_memo:
+                    return rate_memo[key]
+                try:
+                    res = await rate_service.get_exchange_rate(
+                        target_date=target_date, from_currency=from_cur, to_currency=to_cur, force_api=False
+                    )
+                    rate_val = getattr(res, "rate", None)
+                    if rate_val is not None and not isinstance(rate_val, Decimal):
+                        rate_val = Decimal(str(rate_val))
+                    rate_memo[key] = rate_val
+                except Exception:
+                    rate_memo[key] = None
+                return rate_memo[key]
+
+            # Use a new DB session for background task
+            from src.config.database import get_db_session
+            async with get_db_session() as bg_db:
+                imported = 0
+                failed = 0
+                for row in reader:
+                    row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+                    def _g(k): return row.get(k, "").strip()
+
+                    trade_date_str = _g("trade_date")
+                    if not trade_date_str:
+                        failed += 1
+                        continue
+                    try:
+                        trade_date = _dt.strptime(trade_date_str[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        try:
+                            import dateutil.parser
+                            trade_date = dateutil.parser.parse(trade_date_str).date()
+                        except Exception:
+                            failed += 1
+                            continue
+
+                    supplier_name = _g("supplier_name")
+                    product_keyword = _g("product_keyword")
+                    if not supplier_name or not product_keyword:
+                        failed += 1
+                        continue
+
+                    currency = (_g("currency") or "IDR").upper()
+                    price_str = _g("price_per_unit") or _g("price") or _g("trade_amount")
+                    try:
+                        price_val = Decimal(price_str.replace(",", "")) if price_str else None
+                    except Exception:
+                        price_val = None
+
+                    trade_amount_str = _g("trade_amount")
+                    try:
+                        trade_amount = Decimal(trade_amount_str.replace(",", "")) if trade_amount_str else None
+                    except Exception:
+                        trade_amount = None
+
+                    qty_str = _g("quantity")
+                    try:
+                        qty = Decimal(qty_str.replace(",", "")) if qty_str else None
+                    except Exception:
+                        qty = None
+
+                    price_usd = None
+                    trade_amount_usd = None
+                    if currency != "USD":
+                        rate = await _get_rate(currency, "USD", trade_date)
+                        if rate:
+                            if price_val:
+                                price_usd = price_val * rate
+                            if trade_amount:
+                                trade_amount_usd = trade_amount * rate
+                    else:
+                        price_usd = price_val
+                        trade_amount_usd = trade_amount
+
+                    record = TradeData(
+                        trade_date=trade_date,
+                        buyer_name=_g("buyer_name") or None,
+                        supplier_name=supplier_name,
+                        origin_country_code=_g("origin_country_code") or None,
+                        destination_country_code=_g("destination_country_code") or None,
+                        hs_code=_g("hs_code") or None,
+                        product_keyword=product_keyword,
+                        brand=_g("brand") or None,
+                        quantity=qty,
+                        quantity_unit=_g("quantity_unit") or None,
+                        currency=currency,
+                        price_per_unit=price_val,
+                        price_usd_per_unit=price_usd,
+                        trade_amount=trade_amount,
+                        trade_amount_usd=trade_amount_usd,
+                        user_id=BOT_USER_ID,
+                    )
+                    bg_db.add(record)
+                    imported += 1
+
+                await bg_db.commit()
+            return imported, failed
+        except Exception as exc:
+            logger.error(f"bot_import_trade_data background error: {exc}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    background_tasks.add_task(_run_import)
+
+    preview = _preview_csv(csv_bytes)
+    return {
+        "import_id": import_id,
+        "status": "processing",
+        "message": f"Import '{fname}' dimulai ({preview['valid_rows']} baris valid dari {preview['total_rows']} total). Cek hasil di TRADE → Data Perdagangan.",
+        "total_rows": preview["total_rows"],
+        "valid_rows": preview["valid_rows"],
+        "invalid_rows": preview["invalid_rows"],
+    }

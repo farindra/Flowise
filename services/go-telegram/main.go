@@ -259,7 +259,7 @@ func (b *Bot) processMessage(msg *Message) {
 				setPendingUpload(chatID, p)
 				b.sendText(chatID, "✅ Penawaran Supplier\\.\n\nBalas dengan format:\n`SUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>`\n\nContoh: `SUPPLIER: SANKO, CURRENCY: USD`\n\nAtau ketik `skip` untuk auto\\-detect dari file\\.")
 			case "trade":
-				b.sendText(chatID, "🚧 Fitur import *Data Perdagangan* sedang dalam pengembangan\\. Coming soon\\!")
+				go b.doTradeDataPreview(chatID, p)
 			case "permintaan":
 				b.sendText(chatID, "🚧 Fitur import *Permintaan Barang* sedang dalam pengembangan\\. Coming soon\\!")
 			default:
@@ -274,6 +274,16 @@ func (b *Bot) processMessage(msg *Message) {
 				return
 			}
 			go b.doUploadSupplierOffer(chatID, p, supplierName, currency)
+		case "trade_confirm":
+			lower := strings.ToLower(strings.TrimSpace(msg.Text))
+			if lower == "ya" || lower == "yes" || lower == "lanjut" || lower == "ok" || lower == "import" {
+				go b.doTradeDataImport(chatID, p)
+			} else if lower == "batal" || lower == "cancel" || lower == "tidak" || lower == "no" {
+				b.sendText(chatID, "❌ Import dibatalkan\\.")
+			} else {
+				setPendingUpload(chatID, p)
+				b.sendText(chatID, "❓ Balas *ya* untuk import atau *batal* untuk membatalkan\\.")
+			}
 		}
 		return
 	}
@@ -390,12 +400,13 @@ func (b *Bot) isExcelDoc(doc *Document) bool {
 }
 
 // pendingUpload holds a downloaded Excel file waiting for user confirmation.
-// Step: "intent" → waiting for file purpose; "supplier_info" → waiting for name+currency.
+// Step: "intent" → file purpose; "supplier_info" → name+currency; "trade_confirm" → ya/batal after preview.
 type pendingUpload struct {
-	FileData []byte
-	FileName string
-	At       time.Time
-	Step     string // "intent" or "supplier_info"
+	FileData    []byte
+	FileName    string
+	At          time.Time
+	Step        string // "intent", "supplier_info", "trade_confirm"
+	PreviewText string // formatted preview message (for trade confirm step)
 }
 
 // pendingUploads maps chatID → pending upload (max ~5 min TTL).
@@ -490,6 +501,176 @@ func (b *Bot) processDocumentMessage(msg *Message) {
 		)
 	}
 	b.sendText(chatID, prompt)
+}
+
+// tradePreviewResponse mirrors the TRADE preview endpoint response.
+type tradePreviewResponse struct {
+	TotalRows       int      `json:"total_rows"`
+	ValidRows       int      `json:"valid_rows"`
+	InvalidRows     int      `json:"invalid_rows"`
+	ColumnsFound    []string `json:"columns_found"`
+	MissingRequired []string `json:"missing_required"`
+	HasPrice        bool     `json:"has_price"`
+	Errors          []struct {
+		Row    int      `json:"row"`
+		Errors []string `json:"errors"`
+	} `json:"errors"`
+	Filename   string `json:"filename"`
+	CsvSizeKB  float64 `json:"csv_size_kb"`
+}
+
+// doTradeDataPreview sends the file to TRADE preview endpoint and shows summary to owner.
+func (b *Bot) doTradeDataPreview(chatID int64, p *pendingUpload) {
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotKey := os.Getenv("TRADE_BOT_API_KEY")
+
+	b.sendText(chatID, "⏳ Memvalidasi file data perdagangan\\.\\.\\.")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", p.FileName)
+	_, _ = part.Write(p.FileData)
+	mw.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		tradeURL+"/api/v1/bot-integration/owner/preview-trade-data", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-API-Key", tradeBotKey)
+
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		b.sendText(chatID, "❌ Gagal koneksi ke TRADE: "+escapeMarkdown(err.Error()))
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		errMsg := string(raw)
+		if len(errMsg) > 300 {
+			errMsg = errMsg[:300]
+		}
+		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", resp.StatusCode, escapeMarkdown(errMsg)))
+		return
+	}
+
+	var pr tradePreviewResponse
+	json.Unmarshal(raw, &pr)
+
+	// Build preview message
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📊 *Preview Data Perdagangan*\n\n"))
+	sb.WriteString(fmt.Sprintf("📄 File: %s\n", escapeMarkdown(p.FileName)))
+	sb.WriteString(fmt.Sprintf("📝 Total baris: *%d*\n", pr.TotalRows))
+	sb.WriteString(fmt.Sprintf("✅ Valid: *%d*\n", pr.ValidRows))
+	if pr.InvalidRows > 0 {
+		sb.WriteString(fmt.Sprintf("❌ Invalid: *%d*\n", pr.InvalidRows))
+	}
+
+	if len(pr.MissingRequired) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠️ *Kolom wajib tidak ditemukan:*\n"))
+		for _, c := range pr.MissingRequired {
+			sb.WriteString(fmt.Sprintf("• `%s`\n", c))
+		}
+	} else {
+		sb.WriteString("\n✅ Semua kolom wajib ditemukan\n")
+		if !pr.HasPrice {
+			sb.WriteString("⚠️ Kolom harga \\(`price_per_unit`/`trade_amount`\\) tidak ditemukan\n")
+		}
+	}
+
+	if len(pr.Errors) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠️ *Contoh baris bermasalah \\(%d\\):*\n", pr.InvalidRows))
+		for _, e := range pr.Errors {
+			if len(pr.Errors) > 3 && e.Row > pr.Errors[2].Row {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("• Baris %d: %s\n", e.Row, escapeMarkdown(strings.Join(e.Errors, ", "))))
+		}
+	}
+
+	canImport := len(pr.MissingRequired) == 0 && pr.HasPrice && pr.ValidRows > 0
+	if canImport {
+		sb.WriteString(fmt.Sprintf("\nBalas *ya* untuk import *%d baris* ke TRADE, atau *batal*\\.", pr.ValidRows))
+		p.Step = "trade_confirm"
+		setPendingUpload(chatID, p)
+	} else {
+		sb.WriteString("\n❌ File tidak dapat diimport\\. Perbaiki kolom yang hilang lalu kirim ulang\\.")
+	}
+
+	b.sendText(chatID, sb.String())
+}
+
+// doTradeDataImport sends the file to TRADE import endpoint after owner confirms.
+func (b *Bot) doTradeDataImport(chatID int64, p *pendingUpload) {
+	tradeURL := os.Getenv("TRADE_URL")
+	tradeBotKey := os.Getenv("TRADE_BOT_API_KEY")
+
+	b.sendText(chatID, "⏳ Mengimport data perdagangan ke TRADE\\.\\.\\.")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", p.FileName)
+	_, _ = part.Write(p.FileData)
+	mw.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		tradeURL+"/api/v1/bot-integration/owner/import-trade-data", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-API-Key", tradeBotKey)
+
+	resp, err := (&http.Client{Timeout: 120 * time.Second}).Do(req)
+	if err != nil {
+		b.sendText(chatID, "❌ Gagal koneksi ke TRADE: "+escapeMarkdown(err.Error()))
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		errMsg := string(raw)
+		if len(errMsg) > 300 {
+			errMsg = errMsg[:300]
+		}
+		b.sendText(chatID, fmt.Sprintf("❌ TRADE error %d: %s", resp.StatusCode, escapeMarkdown(errMsg)))
+		return
+	}
+
+	var result struct {
+		TotalRows   int    `json:"total_rows"`
+		ValidRows   int    `json:"valid_rows"`
+		InvalidRows int    `json:"invalid_rows"`
+		Message     string `json:"message"`
+	}
+	json.Unmarshal(raw, &result)
+
+	b.sendText(chatID, fmt.Sprintf(
+		"✅ *Import Data Perdagangan berhasil dimulai\\!*\n\n"+
+			"📄 File: %s\n"+
+			"📝 Total baris: *%d*\n"+
+			"✅ Diproses: *%d*\n"+
+			"❌ Dilewati: *%d*\n\n"+
+			"Cek hasil di TRADE → *Data Perdagangan* dalam beberapa menit\\.",
+		escapeMarkdown(p.FileName), result.TotalRows, result.ValidRows, result.InvalidRows,
+	))
+}
+
+// escapeMarkdown escapes special MarkdownV2 characters.
+func escapeMarkdown(s string) string {
+	replacer := strings.NewReplacer(
+		"_", "\\_", "*", "\\*", "[", "\\[", "]", "\\]",
+		"(", "\\(", ")", "\\)", "~", "\\~", "`", "\\`",
+		">", "\\>", "#", "\\#", "+", "\\+", "-", "\\-",
+		"=", "\\=", "|", "\\|", "{", "\\{", "}", "\\}",
+		".", "\\.", "!", "\\!",
+	)
+	return replacer.Replace(s)
 }
 
 // doUploadSupplierOffer uploads the pending Excel file to TRADE with given supplier+currency.

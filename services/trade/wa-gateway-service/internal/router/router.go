@@ -44,12 +44,12 @@ type ActiveConv struct {
 }
 
 // pendingUpload holds a downloaded Excel file waiting for user confirmation.
-// step: "intent" → waiting for file purpose; "supplier_info" → waiting for name+currency.
+// step: "intent" → file purpose; "supplier_info" → name+currency; "trade_confirm" → ya/batal after preview.
 type pendingUpload struct {
 	fileData []byte
 	fileName string
 	at       time.Time
-	step     string // "intent" or "supplier_info"
+	step     string // "intent", "supplier_info", "trade_confirm"
 }
 
 // Router is the Go port of the MessageHandler class. One instance per

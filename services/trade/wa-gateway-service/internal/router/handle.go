@@ -58,15 +58,13 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 				case "supplier":
 					p.step = "supplier_info"
 					r.setPendingUpload(phone, p)
-					r.reply(ctx, evt, fmt.Sprintf(
-						"✅ Penawaran Supplier.\n\nBalas dengan format:\nSUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>\n\nContoh: SUPPLIER: SANKO, CURRENCY: USD\n\nAtau ketik *skip* untuk auto-detect dari file.",
-					))
+					r.reply(ctx, evt, "✅ Penawaran Supplier.\n\nBalas dengan format:\nSUPPLIER: <nama supplier>, CURRENCY: <USD/IDR/SGD/JPY/EUR>\n\nContoh: SUPPLIER: SANKO, CURRENCY: USD\n\nAtau ketik *skip* untuk auto-detect dari file.")
 				case "trade":
-					r.reply(ctx, evt, "🚧 Fitur import *Data Perdagangan* sedang dalam pengembangan. Coming soon!")
+					go r.doTradeDataPreview(ctx, evt, p)
 				case "permintaan":
 					r.reply(ctx, evt, "🚧 Fitur import *Permintaan Barang* sedang dalam pengembangan. Coming soon!")
 				default:
-					r.setPendingUpload(phone, p) // put back, re-ask
+					r.setPendingUpload(phone, p)
 					r.reply(ctx, evt, "❓ Pilihan tidak dikenali. Balas:\n*1* - Penawaran Supplier\n*2* - Data Perdagangan\n*3* - Permintaan Barang")
 				}
 			case "supplier_info":
@@ -77,6 +75,16 @@ func (r *Router) handleSingleMessage(evt *events.Message) error {
 					return nil
 				}
 				go r.doUploadSupplierOffer(ctx, evt, p, supplierName, currency)
+			case "trade_confirm":
+				lower := strings.ToLower(strings.TrimSpace(body))
+				if lower == "ya" || lower == "yes" || lower == "lanjut" || lower == "ok" || lower == "import" {
+					go r.doTradeDataImport(ctx, evt, p)
+				} else if lower == "batal" || lower == "cancel" || lower == "tidak" || lower == "no" {
+					r.reply(ctx, evt, "❌ Import dibatalkan.")
+				} else {
+					r.setPendingUpload(phone, p)
+					r.reply(ctx, evt, "❓ Balas *ya* untuk import atau *batal* untuk membatalkan.")
+				}
 			}
 			return nil
 		}
@@ -337,6 +345,89 @@ func (r *Router) doUploadSupplierOffer(ctx context.Context, evt *events.Message,
 			"Proses auto-mapping produk sedang berjalan di background.\n"+
 			"Cek hasil di TRADE → *Penawaran Supplier* dalam beberapa menit.",
 		p.fileName, supLabel, currency, result.UploadID,
+	)
+	r.reply(ctx, evt, msg)
+	_ = r.store.AddToHistory(phone, "assistant", msg)
+}
+
+// doTradeDataPreview uploads file to TRADE preview endpoint and replies with summary.
+func (r *Router) doTradeDataPreview(ctx context.Context, evt *events.Message, p *pendingUpload) {
+	phone := evt.Info.Sender.User
+	r.reply(ctx, evt, "⏳ Memvalidasi file data perdagangan...")
+
+	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	pr, err := r.trade.PreviewTradeData(reqCtx, p.fileData, p.fileName)
+	if err != nil {
+		r.reply(ctx, evt, "❌ Gagal validasi: "+err.Error())
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📊 *Preview Data Perdagangan*\n\n")
+	sb.WriteString(fmt.Sprintf("📄 File: %s\n", p.fileName))
+	sb.WriteString(fmt.Sprintf("📝 Total baris: *%d*\n", pr.TotalRows))
+	sb.WriteString(fmt.Sprintf("✅ Valid: *%d*\n", pr.ValidRows))
+	if pr.InvalidRows > 0 {
+		sb.WriteString(fmt.Sprintf("❌ Invalid: *%d*\n", pr.InvalidRows))
+	}
+	if len(pr.MissingRequired) > 0 {
+		sb.WriteString("\n⚠️ *Kolom wajib tidak ditemukan:*\n")
+		for _, c := range pr.MissingRequired {
+			sb.WriteString("• " + c + "\n")
+		}
+	} else {
+		sb.WriteString("\n✅ Semua kolom wajib ditemukan\n")
+		if !pr.HasPrice {
+			sb.WriteString("⚠️ Kolom harga (price_per_unit/trade_amount) tidak ditemukan\n")
+		}
+	}
+	if len(pr.Errors) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠️ Contoh baris bermasalah (%d):\n", pr.InvalidRows))
+		for i, e := range pr.Errors {
+			if i >= 3 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("• Baris %d: %s\n", e.Row, strings.Join(e.Errors, ", ")))
+		}
+	}
+
+	canImport := len(pr.MissingRequired) == 0 && pr.HasPrice && pr.ValidRows > 0
+	if canImport {
+		sb.WriteString(fmt.Sprintf("\nBalas *ya* untuk import *%d baris* ke TRADE, atau *batal*.", pr.ValidRows))
+		p.step = "trade_confirm"
+		r.setPendingUpload(phone, p)
+	} else {
+		sb.WriteString("\n❌ File tidak dapat diimport. Perbaiki kolom yang hilang lalu kirim ulang.")
+	}
+
+	r.reply(ctx, evt, sb.String())
+	_ = r.store.AddToHistory(phone, "assistant", sb.String())
+}
+
+// doTradeDataImport uploads file to TRADE import endpoint after owner confirms.
+func (r *Router) doTradeDataImport(ctx context.Context, evt *events.Message, p *pendingUpload) {
+	phone := evt.Info.Sender.User
+	r.reply(ctx, evt, "⏳ Mengimport data perdagangan ke TRADE...")
+
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	result, err := r.trade.ImportTradeData(reqCtx, p.fileData, p.fileName)
+	if err != nil {
+		r.reply(ctx, evt, "❌ Gagal import ke TRADE: "+err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf(
+		"✅ *Import Data Perdagangan berhasil dimulai!*\n\n"+
+			"📄 File: %s\n"+
+			"📝 Total baris: *%d*\n"+
+			"✅ Diproses: *%d*\n"+
+			"❌ Dilewati: *%d*\n\n"+
+			"Cek hasil di TRADE → *Data Perdagangan* dalam beberapa menit.",
+		p.fileName, result.TotalRows, result.ValidRows, result.InvalidRows,
 	)
 	r.reply(ctx, evt, msg)
 	_ = r.store.AddToHistory(phone, "assistant", msg)
