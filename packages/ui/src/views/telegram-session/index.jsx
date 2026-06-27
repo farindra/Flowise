@@ -250,10 +250,11 @@ export default function TelegramSession() {
                             <InputLabel>Agentflow / Chatflow</InputLabel>
                             <Select value={form.chatflow_id} label='Agentflow / Chatflow'
                                 displayEmpty
+                                renderValue={(val) => val
+                                    ? <Typography variant='body2'>{getChatflowName(val)}</Typography>
+                                    : <Typography variant='body2' color='text.secondary'>— Pilih Agentflow —</Typography>
+                                }
                                 onChange={(e) => setForm((f) => ({ ...f, chatflow_id: e.target.value }))}>
-                                <MenuItem disabled value=''>
-                                    <Typography color='text.secondary'>{chatflows.length === 0 ? 'Memuat daftar...' : '— Pilih Agentflow —'}</Typography>
-                                </MenuItem>
                                 {chatflows.map((cf) => (
                                     <MenuItem key={cf.id} value={cf.id}>
                                         <Stack>
