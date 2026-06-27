@@ -9,8 +9,12 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
+    FormControl,
     IconButton,
+    InputLabel,
+    MenuItem,
     Paper,
+    Select,
     Stack,
     Table,
     TableBody,
@@ -30,9 +34,12 @@ import {
     IconPhone,
     IconPlugConnectedX,
     IconBrandWhatsapp,
-    IconCheck
+    IconCheck,
+    IconEye,
+    IconExternalLink
 } from '@tabler/icons-react'
 import { useTheme } from '@mui/material/styles'
+import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 
 const API = '/wa-session'
@@ -41,13 +48,16 @@ const emptyForm = { name: '', chatflow_id: '', human_contact: '', allow_phones: 
 
 export default function WASession() {
     const theme = useTheme()
+    const navigate = useNavigate()
     const [sessions, setSessions] = useState([])
+    const [chatflows, setChatflows] = useState([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
     const [addOpen, setAddOpen] = useState(false)
     const [form, setForm] = useState(emptyForm)
     const [saving, setSaving] = useState(false)
     const [saveError, setSaveError] = useState('')
+    const [viewSession, setViewSession] = useState(null)
     const [connectOpen, setConnectOpen] = useState(false)
     const [activeSession, setActiveSession] = useState(null)
     const [qrImg, setQrImg] = useState(null)
@@ -57,6 +67,13 @@ export default function WASession() {
     const [pairingLoading, setPairingLoading] = useState(false)
     const [pairingError, setPairingError] = useState('')
     const [logoutBusy, setLogoutBusy] = useState({})
+
+    const loadChatflows = useCallback(async () => {
+        try {
+            const res = await apiClient.get('/chatflows')
+            setChatflows(res.data || [])
+        } catch { /* non-fatal */ }
+    }, [])
 
     const load = useCallback(async () => {
         setLoading(true)
@@ -73,9 +90,13 @@ export default function WASession() {
 
     useEffect(() => {
         load()
+        loadChatflows()
         const t = setInterval(load, 8000)
         return () => clearInterval(t)
-    }, [load])
+    }, [load, loadChatflows])
+
+    const getChatflow = (id) => chatflows.find((c) => c.id === id)
+    const getChatflowName = (id) => getChatflow(id)?.name || (id ? '— Belum Terhubung' : '—')
 
     const handleAdd = async () => {
         setSaving(true)
@@ -121,10 +142,7 @@ export default function WASession() {
         setPairingCode('')
         setPairingError('')
         setConnectOpen(true)
-        // Start connect flow then load QR
-        try {
-            await apiClient.post(`${API}/sessions/${session.id}/connect`)
-        } catch { /* already connecting */ }
+        try { await apiClient.post(`${API}/sessions/${session.id}/connect`) } catch { /* already connecting */ }
         await refreshQR(session.id)
     }
 
@@ -133,11 +151,8 @@ export default function WASession() {
         try {
             const res = await apiClient.get(`${API}/sessions/${id}/qr`, { responseType: 'blob' })
             setQrImg(URL.createObjectURL(res.data))
-        } catch {
-            setQrImg(null)
-        } finally {
-            setQrLoading(false)
-        }
+        } catch { setQrImg(null) }
+        finally { setQrLoading(false) }
     }
 
     const handlePairPhone = async () => {
@@ -149,20 +164,21 @@ export default function WASession() {
         setPairingLoading(true)
         try {
             const res = await apiClient.post(`${API}/sessions/${activeSession.id}/pair-phone?phone=${cleaned}`)
-            if (res.data?.pairing_code) {
-                setPairingCode(res.data.pairing_code)
-            } else {
-                setPairingError(res.data?.error || 'Gagal mendapat kode pairing')
-            }
+            if (res.data?.pairing_code) setPairingCode(res.data.pairing_code)
+            else setPairingError(res.data?.error || 'Gagal mendapat kode pairing')
         } catch (e) {
             setPairingError(e?.response?.data?.error || 'Gagal')
-        } finally {
-            setPairingLoading(false)
-        }
+        } finally { setPairingLoading(false) }
     }
 
     const statusColor = (s) => s === 'connected' ? 'success' : s === 'qr_pending' ? 'warning' : 'default'
     const statusLabel = (s) => s === 'connected' ? 'Connected' : s === 'qr_pending' ? 'Pending QR' : 'Offline'
+
+    const chatflowType = (id) => {
+        const cf = getChatflow(id)
+        if (!cf) return null
+        return cf.type === 'MULTIAGENT' || cf.name?.toLowerCase().includes('agent') ? 'agentflows' : 'chatflows'
+    }
 
     return (
         <Box sx={{ p: 3 }}>
@@ -172,9 +188,7 @@ export default function WASession() {
                     <Typography variant='h4'>WA Bots</Typography>
                 </Stack>
                 <Stack direction='row' gap={1}>
-                    <Button variant='outlined' startIcon={<IconRefresh size={16} />} onClick={load} disabled={loading}>
-                        Refresh
-                    </Button>
+                    <Button variant='outlined' startIcon={<IconRefresh size={16} />} onClick={load} disabled={loading}>Refresh</Button>
                     <Button variant='contained' startIcon={<IconPlus size={16} />} onClick={() => { setForm(emptyForm); setSaveError(''); setAddOpen(true) }}>
                         Tambah Sesi
                     </Button>
@@ -191,9 +205,9 @@ export default function WASession() {
                 <Table>
                     <TableHead>
                         <TableRow>
-                            <TableCell>Nama</TableCell>
-                            <TableCell>Nomor</TableCell>
-                            <TableCell>Chatflow ID</TableCell>
+                            <TableCell>Nama Bot</TableCell>
+                            <TableCell>Nomor WA</TableCell>
+                            <TableCell>Agentflow</TableCell>
                             <TableCell>Status</TableCell>
                             <TableCell align='right'>Aksi</TableCell>
                         </TableRow>
@@ -220,15 +234,18 @@ export default function WASession() {
                                     </Typography>
                                 </TableCell>
                                 <TableCell>
-                                    <Typography variant='body2' fontFamily='monospace' fontSize={12}>
-                                        {s.chatflow_id}
-                                    </Typography>
+                                    <Typography variant='body2'>{getChatflowName(s.chatflow_id)}</Typography>
                                 </TableCell>
                                 <TableCell>
                                     <Chip label={statusLabel(s.status)} color={statusColor(s.status)} size='small' />
                                 </TableCell>
                                 <TableCell align='right'>
                                     <Stack direction='row' justifyContent='flex-end' gap={0.5}>
+                                        <Tooltip title='Lihat detail'>
+                                            <IconButton size='small' onClick={() => setViewSession(s)}>
+                                                <IconEye size={16} />
+                                            </IconButton>
+                                        </Tooltip>
                                         {s.status !== 'connected' && (
                                             <Tooltip title='Connect / Scan QR'>
                                                 <IconButton size='small' color='primary' onClick={() => openConnect(s)}>
@@ -238,12 +255,7 @@ export default function WASession() {
                                         )}
                                         {s.status === 'connected' && (
                                             <Tooltip title='Disconnect'>
-                                                <IconButton
-                                                    size='small'
-                                                    color='warning'
-                                                    onClick={() => handleLogout(s.id)}
-                                                    disabled={!!logoutBusy[s.id]}
-                                                >
+                                                <IconButton size='small' color='warning' onClick={() => handleLogout(s.id)} disabled={!!logoutBusy[s.id]}>
                                                     {logoutBusy[s.id] ? <CircularProgress size={14} /> : <IconPlugConnectedX size={16} />}
                                                 </IconButton>
                                             </Tooltip>
@@ -271,13 +283,29 @@ export default function WASession() {
                                 <Typography variant='body2'>{saveError}</Typography>
                             </Paper>
                         )}
-                        <TextField label='Nama Sesi' value={form.name}
+                        <TextField label='Nama Bot' value={form.name}
                             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                             placeholder='Customer Service WA' fullWidth required />
-                        <TextField label='Chatflow ID' value={form.chatflow_id}
-                            onChange={(e) => setForm((f) => ({ ...f, chatflow_id: e.target.value }))}
-                            placeholder='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' fullWidth required
-                            helperText='UUID dari Flowise Agentflow yang dituju' />
+
+                        <FormControl fullWidth required>
+                            <InputLabel>Agentflow / Chatflow</InputLabel>
+                            <Select value={form.chatflow_id} label='Agentflow / Chatflow'
+                                displayEmpty
+                                onChange={(e) => setForm((f) => ({ ...f, chatflow_id: e.target.value }))}>
+                                <MenuItem disabled value=''>
+                                    <Typography color='text.secondary'>{chatflows.length === 0 ? 'Memuat daftar...' : '— Pilih Agentflow —'}</Typography>
+                                </MenuItem>
+                                {chatflows.map((cf) => (
+                                    <MenuItem key={cf.id} value={cf.id}>
+                                        <Stack>
+                                            <Typography variant='body2'>{cf.name}</Typography>
+                                            <Typography variant='caption' color='text.secondary' fontFamily='monospace'>{cf.id}</Typography>
+                                        </Stack>
+                                    </MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+
                         <TextField label='Kontak Admin (opsional)' value={form.human_contact}
                             onChange={(e) => setForm((f) => ({ ...f, human_contact: e.target.value }))}
                             placeholder='@username atau nomor WA' fullWidth
@@ -290,10 +318,64 @@ export default function WASession() {
                 </DialogContent>
                 <DialogActions sx={{ px: 3, pb: 2 }}>
                     <Button onClick={() => setAddOpen(false)} disabled={saving}>Batal</Button>
-                    <Button variant='contained' onClick={handleAdd}
-                        disabled={saving || !form.name || !form.chatflow_id}>
+                    <Button variant='contained' onClick={handleAdd} disabled={saving || !form.name || !form.chatflow_id}>
                         {saving ? 'Menyimpan...' : 'Simpan'}
                     </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* View Detail Dialog */}
+            <Dialog open={!!viewSession} onClose={() => setViewSession(null)} fullWidth maxWidth='sm'>
+                <DialogTitle>Detail Bot — {viewSession?.name}</DialogTitle>
+                <DialogContent>
+                    {viewSession && (
+                        <Stack gap={2} mt={1}>
+                            <DetailRow label='Session ID'>
+                                <Typography variant='body2' fontFamily='monospace' fontSize={12}>{viewSession.id}</Typography>
+                            </DetailRow>
+                            <DetailRow label='Nomor WA'>
+                                <Typography variant='body2' fontFamily='monospace'>
+                                    {viewSession.phone ? '+' + viewSession.phone : '— (belum terhubung)'}
+                                </Typography>
+                            </DetailRow>
+                            <DetailRow label='Status'>
+                                <Chip label={statusLabel(viewSession.status)} color={statusColor(viewSession.status)} size='small' />
+                            </DetailRow>
+                            <DetailRow label='Agentflow'>
+                                <Stack direction='row' alignItems='center' gap={1}>
+                                    <Typography variant='body2'>{getChatflowName(viewSession.chatflow_id)}</Typography>
+                                    <Tooltip title='Buka Agentflow'>
+                                        <IconButton size='small' onClick={() => {
+                                            const type = chatflowType(viewSession.chatflow_id) || 'agentflows'
+                                            navigate(`/${type}/${viewSession.chatflow_id}`)
+                                            setViewSession(null)
+                                        }}>
+                                            <IconExternalLink size={14} />
+                                        </IconButton>
+                                    </Tooltip>
+                                </Stack>
+                                <Typography variant='caption' color='text.secondary' fontFamily='monospace'>{viewSession.chatflow_id}</Typography>
+                            </DetailRow>
+                            {viewSession.human_contact && (
+                                <DetailRow label='Kontak Admin'>
+                                    <Typography variant='body2'>{viewSession.human_contact}</Typography>
+                                </DetailRow>
+                            )}
+                            {viewSession.allow_phones && (
+                                <DetailRow label='Batasi Nomor'>
+                                    <Typography variant='body2' fontFamily='monospace'>{viewSession.allow_phones}</Typography>
+                                </DetailRow>
+                            )}
+                        </Stack>
+                    )}
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                    {viewSession?.status !== 'connected' && (
+                        <Button startIcon={<IconQrcode size={16} />} onClick={() => { openConnect(viewSession); setViewSession(null) }}>
+                            Connect
+                        </Button>
+                    )}
+                    <Button variant='contained' onClick={() => setViewSession(null)}>Tutup</Button>
                 </DialogActions>
             </Dialog>
 
@@ -302,7 +384,6 @@ export default function WASession() {
                 <DialogTitle>Hubungkan WhatsApp — {activeSession?.name}</DialogTitle>
                 <DialogContent>
                     <Stack direction={{ xs: 'column', sm: 'row' }} gap={3} mt={1}>
-                        {/* QR Code */}
                         <Box flex={1} textAlign='center'>
                             <Stack direction='row' alignItems='center' gap={1} mb={1.5}>
                                 <IconQrcode size={18} />
@@ -312,7 +393,7 @@ export default function WASession() {
                                 WA → Linked Devices → Link a Device → Scan QR
                             </Typography>
                             {qrLoading ? (
-                                <Box sx={{ width: 200, height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <Box sx={{ width: 200, height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto' }}>
                                     <CircularProgress />
                                 </Box>
                             ) : qrImg ? (
@@ -322,9 +403,7 @@ export default function WASession() {
                             ) : (
                                 <Box sx={{ width: 200, height: 200, border: '1px dashed', borderColor: 'divider', borderRadius: 1,
                                     display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto' }}>
-                                    <Typography variant='caption' color='text.secondary' textAlign='center'>
-                                        QR belum tersedia.<br/>Klik Refresh.
-                                    </Typography>
+                                    <Typography variant='caption' color='text.secondary' textAlign='center'>QR belum tersedia.<br/>Klik Refresh.</Typography>
                                 </Box>
                             )}
                             <Button size='small' startIcon={<IconRefresh size={14} />} sx={{ mt: 1 }}
@@ -335,7 +414,6 @@ export default function WASession() {
 
                         <Divider orientation='vertical' flexItem sx={{ display: { xs: 'none', sm: 'block' } }} />
 
-                        {/* Pair by Phone */}
                         <Box flex={1}>
                             <Stack direction='row' alignItems='center' gap={1} mb={1.5}>
                                 <IconPhone size={18} />
@@ -352,15 +430,11 @@ export default function WASession() {
                                 startIcon={pairingLoading ? <CircularProgress size={14} /> : <IconPhone size={14} />}>
                                 Dapatkan Kode
                             </Button>
-                            {pairingError && (
-                                <Typography variant='caption' color='error' display='block' mt={1}>{pairingError}</Typography>
-                            )}
+                            {pairingError && <Typography variant='caption' color='error' display='block' mt={1}>{pairingError}</Typography>}
                             {pairingCode && (
                                 <Box mt={2} p={1.5} sx={{ bgcolor: 'success.lighter', borderRadius: 1, textAlign: 'center' }}>
                                     <Typography variant='caption' color='success.dark' display='block'>Kode Pairing</Typography>
-                                    <Typography variant='h4' color='success.dark' fontFamily='monospace' letterSpacing={4} mt={0.5}>
-                                        {pairingCode}
-                                    </Typography>
+                                    <Typography variant='h4' color='success.dark' fontFamily='monospace' letterSpacing={4} mt={0.5}>{pairingCode}</Typography>
                                     <Stack direction='row' alignItems='center' justifyContent='center' gap={0.5} mt={0.5}>
                                         <IconCheck size={14} />
                                         <Typography variant='caption' color='success.dark'>Masukkan di WA</Typography>
@@ -374,6 +448,15 @@ export default function WASession() {
                     <Button onClick={() => setConnectOpen(false)}>Tutup</Button>
                 </DialogActions>
             </Dialog>
+        </Box>
+    )
+}
+
+function DetailRow({ label, children }) {
+    return (
+        <Box>
+            <Typography variant='caption' color='text.secondary' display='block' mb={0.5}>{label}</Typography>
+            {children}
         </Box>
     )
 }

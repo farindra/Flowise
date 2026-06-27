@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
     Box,
     Button,
@@ -7,8 +7,12 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    FormControl,
     IconButton,
+    InputLabel,
+    MenuItem,
     Paper,
+    Select,
     Stack,
     Table,
     TableBody,
@@ -20,8 +24,10 @@ import {
     Tooltip,
     Typography
 } from '@mui/material'
-import { IconPlus, IconTrash, IconRefresh, IconBrandTelegram, IconCheck } from '@tabler/icons-react'
+import { IconPlus, IconTrash, IconRefresh, IconBrandTelegram, IconCheck, IconEye, IconExternalLink } from '@tabler/icons-react'
 import { useTheme } from '@mui/material/styles'
+import { useNavigate } from 'react-router-dom'
+import apiClient from '@/api/client'
 
 const API = '/api/v1/telegram-session'
 
@@ -41,7 +47,9 @@ const emptyForm = { name: '', token: '', chatflow_id: '', allow_user_ids: '', di
 
 export default function TelegramSession() {
     const theme = useTheme()
+    const navigate = useNavigate()
     const [bots, setBots] = useState([])
+    const [chatflows, setChatflows] = useState([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
     const [dialogOpen, setDialogOpen] = useState(false)
@@ -49,6 +57,14 @@ export default function TelegramSession() {
     const [saving, setSaving] = useState(false)
     const [saveError, setSaveError] = useState('')
     const [registering, setRegistering] = useState({})
+    const [viewBot, setViewBot] = useState(null)
+
+    const loadChatflows = useCallback(async () => {
+        try {
+            const res = await apiClient.get('/chatflows')
+            setChatflows(res.data || [])
+        } catch { /* non-fatal */ }
+    }, [])
 
     const load = async () => {
         setLoading(true)
@@ -63,7 +79,19 @@ export default function TelegramSession() {
         }
     }
 
-    useEffect(() => { load() }, [])
+    useEffect(() => {
+        load()
+        loadChatflows()
+    }, [])
+
+    const getChatflow = (id) => chatflows.find((c) => c.id === id)
+    const getChatflowName = (id) => getChatflow(id)?.name || (id ? '— Belum Terhubung' : '—')
+
+    const chatflowType = (id) => {
+        const cf = getChatflow(id)
+        if (!cf) return 'agentflows'
+        return cf.type === 'MULTIAGENT' || cf.name?.toLowerCase().includes('agent') ? 'agentflows' : 'chatflows'
+    }
 
     const handleAdd = async () => {
         setSaving(true)
@@ -128,10 +156,9 @@ export default function TelegramSession() {
                 <Table>
                     <TableHead>
                         <TableRow>
-                            <TableCell>Nama</TableCell>
+                            <TableCell>Nama Bot</TableCell>
                             <TableCell>Token</TableCell>
-                            <TableCell>Chatflow ID</TableCell>
-                            <TableCell>Webhook URL</TableCell>
+                            <TableCell>Agentflow</TableCell>
                             <TableCell>Status</TableCell>
                             <TableCell align='right'>Aksi</TableCell>
                         </TableRow>
@@ -139,7 +166,7 @@ export default function TelegramSession() {
                     <TableBody>
                         {bots.length === 0 && (
                             <TableRow>
-                                <TableCell colSpan={6} align='center' sx={{ py: 4, color: 'text.secondary' }}>
+                                <TableCell colSpan={5} align='center' sx={{ py: 4, color: 'text.secondary' }}>
                                     {loading ? 'Memuat...' : 'Belum ada bot. Klik "Tambah Bot" untuk mulai.'}
                                 </TableCell>
                             </TableRow>
@@ -158,14 +185,7 @@ export default function TelegramSession() {
                                     </Typography>
                                 </TableCell>
                                 <TableCell>
-                                    <Typography variant='body2' fontFamily='monospace' fontSize={12}>
-                                        {bot.chatflow_id}
-                                    </Typography>
-                                </TableCell>
-                                <TableCell>
-                                    <Typography variant='body2' fontSize={11} color='text.secondary' sx={{ wordBreak: 'break-all' }}>
-                                        {bot.webhook_url || '—'}
-                                    </Typography>
+                                    <Typography variant='body2'>{getChatflowName(bot.chatflow_id)}</Typography>
                                 </TableCell>
                                 <TableCell>
                                     <Chip
@@ -173,12 +193,15 @@ export default function TelegramSession() {
                                         color={bot.active ? 'success' : 'default'}
                                         size='small'
                                     />
-                                    {bot.disable_upload && (
-                                        <Chip label='No Upload' size='small' sx={{ ml: 0.5 }} />
-                                    )}
+                                    {bot.disable_upload && <Chip label='No Upload' size='small' sx={{ ml: 0.5 }} />}
                                 </TableCell>
                                 <TableCell align='right'>
                                     <Stack direction='row' justifyContent='flex-end' gap={0.5}>
+                                        <Tooltip title='Lihat detail'>
+                                            <IconButton size='small' onClick={() => setViewBot(bot)}>
+                                                <IconEye size={16} />
+                                            </IconButton>
+                                        </Tooltip>
                                         <Tooltip title='Re-register webhook'>
                                             <IconButton
                                                 size='small'
@@ -213,57 +236,121 @@ export default function TelegramSession() {
                             </Paper>
                         )}
                         <TextField
-                            label='Nama Bot'
-                            value={form.name}
+                            label='Nama Bot' value={form.name}
                             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                            placeholder='Customer Service Bot'
-                            fullWidth required
+                            placeholder='Customer Service Bot' fullWidth required
                         />
                         <TextField
-                            label='Bot Token'
-                            value={form.token}
+                            label='Bot Token' value={form.token}
                             onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
-                            placeholder='1234567890:AABBccDDeeFFggHH...'
-                            fullWidth required
+                            placeholder='1234567890:AABBccDDeeFFggHH...' fullWidth required
                             helperText='Dapatkan dari @BotFather di Telegram'
                         />
+                        <FormControl fullWidth required>
+                            <InputLabel>Agentflow / Chatflow</InputLabel>
+                            <Select value={form.chatflow_id} label='Agentflow / Chatflow'
+                                displayEmpty
+                                onChange={(e) => setForm((f) => ({ ...f, chatflow_id: e.target.value }))}>
+                                <MenuItem disabled value=''>
+                                    <Typography color='text.secondary'>{chatflows.length === 0 ? 'Memuat daftar...' : '— Pilih Agentflow —'}</Typography>
+                                </MenuItem>
+                                {chatflows.map((cf) => (
+                                    <MenuItem key={cf.id} value={cf.id}>
+                                        <Stack>
+                                            <Typography variant='body2'>{cf.name}</Typography>
+                                            <Typography variant='caption' color='text.secondary' fontFamily='monospace'>{cf.id}</Typography>
+                                        </Stack>
+                                    </MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
                         <TextField
-                            label='Chatflow ID'
-                            value={form.chatflow_id}
-                            onChange={(e) => setForm((f) => ({ ...f, chatflow_id: e.target.value }))}
-                            placeholder='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
-                            fullWidth required
-                            helperText='UUID dari Flowise Agentflow yang dituju'
-                        />
-                        <TextField
-                            label='Kontak Admin (opsional)'
-                            value={form.human_contact}
+                            label='Kontak Admin (opsional)' value={form.human_contact}
                             onChange={(e) => setForm((f) => ({ ...f, human_contact: e.target.value }))}
-                            placeholder='@username atau nomor WA'
-                            fullWidth
+                            placeholder='@username atau nomor WA' fullWidth
                             helperText='Ditampilkan ke user saat terjadi error'
                         />
                         <TextField
-                            label='Batasi User ID (opsional)'
-                            value={form.allow_user_ids}
+                            label='Batasi User ID (opsional)' value={form.allow_user_ids}
                             onChange={(e) => setForm((f) => ({ ...f, allow_user_ids: e.target.value }))}
-                            placeholder='123456789,987654321'
-                            fullWidth
+                            placeholder='123456789,987654321' fullWidth
                             helperText='Kosongkan = semua user boleh. Isi Telegram User ID dipisah koma untuk bot privat.'
                         />
                     </Stack>
                 </DialogContent>
                 <DialogActions sx={{ px: 3, pb: 2 }}>
                     <Button onClick={() => setDialogOpen(false)} disabled={saving}>Batal</Button>
-                    <Button
-                        variant='contained'
-                        onClick={handleAdd}
-                        disabled={saving || !form.name || !form.token || !form.chatflow_id}
-                    >
+                    <Button variant='contained' onClick={handleAdd}
+                        disabled={saving || !form.name || !form.token || !form.chatflow_id}>
                         {saving ? 'Menyimpan...' : 'Simpan'}
                     </Button>
                 </DialogActions>
             </Dialog>
+
+            {/* View Detail Dialog */}
+            <Dialog open={!!viewBot} onClose={() => setViewBot(null)} fullWidth maxWidth='sm'>
+                <DialogTitle>Detail Bot — {viewBot?.name}</DialogTitle>
+                <DialogContent>
+                    {viewBot && (
+                        <Stack gap={2} mt={1}>
+                            <DetailRow label='Bot ID'>
+                                <Typography variant='body2' fontFamily='monospace' fontSize={12}>{viewBot.id}</Typography>
+                            </DetailRow>
+                            <DetailRow label='Token'>
+                                <Typography variant='body2' fontFamily='monospace' fontSize={12}>{viewBot.token_masked}</Typography>
+                            </DetailRow>
+                            <DetailRow label='Webhook URL'>
+                                <Typography variant='body2' fontSize={12} color='text.secondary' sx={{ wordBreak: 'break-all' }}>
+                                    {viewBot.webhook_url || '—'}
+                                </Typography>
+                            </DetailRow>
+                            <DetailRow label='Status'>
+                                <Chip label={viewBot.active ? 'Aktif' : 'Nonaktif'} color={viewBot.active ? 'success' : 'default'} size='small' />
+                            </DetailRow>
+                            <DetailRow label='Agentflow'>
+                                <Stack direction='row' alignItems='center' gap={1}>
+                                    <Typography variant='body2'>{getChatflowName(viewBot.chatflow_id)}</Typography>
+                                    <Tooltip title='Buka Agentflow'>
+                                        <IconButton size='small' onClick={() => {
+                                            const type = chatflowType(viewBot.chatflow_id)
+                                            navigate(`/${type}/${viewBot.chatflow_id}`)
+                                            setViewBot(null)
+                                        }}>
+                                            <IconExternalLink size={14} />
+                                        </IconButton>
+                                    </Tooltip>
+                                </Stack>
+                                <Typography variant='caption' color='text.secondary' fontFamily='monospace'>{viewBot.chatflow_id}</Typography>
+                            </DetailRow>
+                            {viewBot.human_contact && (
+                                <DetailRow label='Kontak Admin'>
+                                    <Typography variant='body2'>{viewBot.human_contact}</Typography>
+                                </DetailRow>
+                            )}
+                            {viewBot.allow_user_ids && (
+                                <DetailRow label='Batasi User ID'>
+                                    <Typography variant='body2' fontFamily='monospace'>{viewBot.allow_user_ids}</Typography>
+                                </DetailRow>
+                            )}
+                        </Stack>
+                    )}
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                    <Button startIcon={<IconRefresh size={16} />} onClick={() => { handleRegister(viewBot.id); setViewBot(null) }}>
+                        Re-register Webhook
+                    </Button>
+                    <Button variant='contained' onClick={() => setViewBot(null)}>Tutup</Button>
+                </DialogActions>
+            </Dialog>
+        </Box>
+    )
+}
+
+function DetailRow({ label, children }) {
+    return (
+        <Box>
+            <Typography variant='caption' color='text.secondary' display='block' mb={0.5}>{label}</Typography>
+            {children}
         </Box>
     )
 }
