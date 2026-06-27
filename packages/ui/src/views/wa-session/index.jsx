@@ -288,9 +288,9 @@ export default function WASession() {
                             placeholder='Customer Service WA' fullWidth required />
 
                         <FormControl fullWidth required>
-                            <InputLabel>Agentflow / Chatflow</InputLabel>
+                            <InputLabel shrink>Agentflow / Chatflow</InputLabel>
                             <Select value={form.chatflow_id} label='Agentflow / Chatflow'
-                                displayEmpty
+                                displayEmpty notched
                                 renderValue={(val) => val
                                     ? <Typography variant='body2'>{getChatflowName(val)}</Typography>
                                     : <Typography variant='body2' color='text.secondary'>— Pilih Agentflow —</Typography>
