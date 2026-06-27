@@ -25,6 +25,7 @@ type Doc struct {
 	Active      bool   `json:"active"`
 	Available   bool   `json:"available"`
 	LastUpdated string `json:"lastUpdated"`
+	Keterangan  string `json:"keterangan"`
 
 	CodeVariations []string `json:"code_variations"`
 }
@@ -41,10 +42,6 @@ type HargaNum struct {
 // Product reconstructs the shape of an entry in local-data-manager.js's
 // in-memory `this.products` array (the shape searchProducts returns to
 // callers).
-//
-// Note: "keterangan" is intentionally not included - saveProducts never
-// produces it for a freshly-synced product (see sync-indexer's
-// internal/transform/transform.go), so it would always be "" here too.
 type Product struct {
 	ID    int64  `json:"id"`
 	Kode  string `json:"kode"`
@@ -62,6 +59,7 @@ type Product struct {
 	Active      bool   `json:"active"`
 	Available   bool   `json:"available"`
 	LastUpdated string `json:"lastUpdated"`
+	Keterangan  string `json:"keterangan"`
 }
 
 // ToProduct reconstructs the original this.products entry shape from a
@@ -89,5 +87,6 @@ func (d Doc) ToProduct() Product {
 		Active:      d.Active,
 		Available:   d.Available,
 		LastUpdated: d.LastUpdated,
+		Keterangan:  d.Keterangan,
 	}
 }
