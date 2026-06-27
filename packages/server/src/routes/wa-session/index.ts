@@ -4,67 +4,54 @@ import http from 'http'
 
 const router = express.Router()
 
-const WA_GATEWAY_URL = process.env.WA_GATEWAY_URL || 'http://127.0.0.1:8100'
-const WA_GATEWAY_TOKEN = process.env.WA_GATEWAY_TOKEN || 'ob-wa-qr-2026'
+const WA_SERVICE_URL = process.env.WA_SERVICE_URL || 'http://127.0.0.1:8082'
+const WA_INTERNAL_KEY = process.env.WA_INTERNAL_KEY || 'ob-wa-internal-2026'
 
-function proxyGet(path: string) {
-    return async (req: Request, res: Response) => {
-        const url = `${WA_GATEWAY_URL}${path}?token=${WA_GATEWAY_TOKEN}`
+function proxy(method: string, pathFn: (req: Request) => string) {
+    return (req: Request, res: Response) => {
+        const url = `${WA_SERVICE_URL}${pathFn(req)}`
         const lib = url.startsWith('https') ? https : http
-        const proxyReq = lib.get(url, (proxyRes) => {
-            res.status(proxyRes.statusCode || 200)
-            const ct = proxyRes.headers['content-type'] || 'application/json'
-            res.setHeader('Content-Type', ct)
-            proxyRes.pipe(res)
-        })
-        proxyReq.on('error', (err) => {
-            res.status(502).json({ error: 'WA gateway unreachable', detail: err.message })
-        })
-    }
-}
 
-function proxyPost(path: string) {
-    return async (req: Request, res: Response) => {
-        const url = `${WA_GATEWAY_URL}${path}?token=${WA_GATEWAY_TOKEN}`
-        const lib = url.startsWith('https') ? https : http
-        const proxyReq = lib.request(url, { method: 'POST' }, (proxyRes) => {
+        const options: http.RequestOptions = {
+            method,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Internal-Key': WA_INTERNAL_KEY
+            }
+        }
+
+        const proxyReq = lib.request(url, options, (proxyRes) => {
             res.status(proxyRes.statusCode || 200)
             res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/json')
             proxyRes.pipe(res)
         })
         proxyReq.on('error', (err) => {
-            res.status(502).json({ error: 'WA gateway unreachable', detail: err.message })
+            res.status(502).json({ error: 'WA service unreachable', detail: err.message })
         })
-        proxyReq.end()
+
+        if (method !== 'GET' && method !== 'DELETE') {
+            req.pipe(proxyReq)
+        } else {
+            proxyReq.end()
+        }
     }
 }
 
-// GET /api/v1/wa-session/status
-router.get('/status', proxyGet('/status'))
+// Sessions CRUD
+router.get('/sessions', proxy('GET', () => '/api/sessions'))
+router.post('/sessions', proxy('POST', () => '/api/sessions'))
+router.put('/sessions/:id', proxy('PUT', (req) => `/api/sessions/${req.params.id}`))
+router.delete('/sessions/:id', proxy('DELETE', (req) => `/api/sessions/${req.params.id}`))
 
-// GET /api/v1/wa-session/qr  → returns QR image PNG
-router.get('/qr', proxyGet('/qr'))
-
-// POST /api/v1/wa-session/logout
-router.post('/logout', proxyPost('/logout'))
-
-// POST /api/v1/wa-session/pair-phone?phone=628xxx
-router.post('/pair-phone', async (req: Request, res: Response) => {
+// Per-session control
+router.get('/sessions/:id/status', proxy('GET', (req) => `/api/sessions/${req.params.id}/status`))
+router.get('/sessions/:id/qr', proxy('GET', (req) => `/api/sessions/${req.params.id}/qr`))
+router.post('/sessions/:id/connect', proxy('POST', (req) => `/api/sessions/${req.params.id}/connect`))
+router.post('/sessions/:id/logout', proxy('POST', (req) => `/api/sessions/${req.params.id}/logout`))
+router.post('/sessions/:id/pair-phone', proxy('POST', (req) => {
     const phone = req.query.phone as string
-    if (!phone) {
-        res.status(400).json({ error: 'missing phone query param' })
-        return
-    }
-    const url = `${WA_GATEWAY_URL}/pair-phone?token=${WA_GATEWAY_TOKEN}&phone=${encodeURIComponent(phone)}`
-    const lib = url.startsWith('https') ? https : http
-    const proxyReq = lib.get(url, (proxyRes) => {
-        res.status(proxyRes.statusCode || 200)
-        res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/json')
-        proxyRes.pipe(res)
-    })
-    proxyReq.on('error', (err) => {
-        res.status(502).json({ error: 'WA gateway unreachable', detail: err.message })
-    })
-})
+    const path = `/api/sessions/${req.params.id}/pair-phone`
+    return phone ? `${path}?phone=${encodeURIComponent(phone)}` : path
+}))
 
 export default router

@@ -86,3 +86,5 @@ services/trade/.claude/
 extensions/
 apps/*/
 !apps/oss-app/
+services/go-telegram/go-telegram
+services/go-wa/bin/
