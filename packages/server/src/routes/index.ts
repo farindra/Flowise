@@ -71,6 +71,8 @@ import userRouter from '../enterprise/routes/user.route'
 import workspaceUserRouter from '../enterprise/routes/workspace-user.route'
 import workspaceRouter from '../enterprise/routes/workspace.route'
 import { IdentityManager } from '../IdentityManager'
+import waSessionRouter from './wa-session'
+import telegramSessionRouter from './telegram-session'
 
 const router = express.Router()
 
@@ -146,5 +148,11 @@ router.use('/account', accountRouter)
 router.use('/loginmethod', loginMethodRouter)
 router.use('/logs', IdentityManager.checkFeatureByPlan('feat:logs'), logsRouter)
 // router.use('/files', IdentityManager.checkFeatureByPlan('feat:files'), filesRouter)
+
+router.use('/wa-session', waSessionRouter)
+router.use('/telegram-session', telegramSessionRouter)
+
+import faqRouter from './faq'
+router.use('/faq', faqRouter)
 
 export default router

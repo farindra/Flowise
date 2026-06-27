@@ -141,12 +141,45 @@ func main() {
 		}
 	}()
 
+	http.HandleFunc("/simulate", r.HandleSimulate(qrToken))
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"service": name,
 			"status":  "ok",
 		})
+	})
+
+	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != qrToken {
+			http.Error(w, "invalid token", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"connected":  wa.IsConnected(),
+			"logged_in":  wa.IsLoggedIn(),
+			"phone":      wa.PhoneNumber(),
+			"qr_pending": wa.IsConnected() && !wa.IsLoggedIn(),
+		})
+	})
+
+	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Query().Get("token") != qrToken {
+			http.Error(w, "invalid token", http.StatusForbidden)
+			return
+		}
+		if err := wa.Logout(r.Context()); err != nil {
+			http.Error(w, "logout error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
 	})
 
 	http.HandleFunc("/qr", func(w http.ResponseWriter, r *http.Request) {

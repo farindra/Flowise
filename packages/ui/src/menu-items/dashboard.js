@@ -23,7 +23,11 @@ import {
     IconLockCheck,
     IconFileDatabase,
     IconShieldLock,
-    IconListCheck
+    IconListCheck,
+    IconBrandWhatsapp,
+    IconHelp,
+    IconSearch,
+    IconBrandTelegram
 } from '@tabler/icons-react'
 
 // constant
@@ -51,7 +55,11 @@ const icons = {
     IconLockCheck,
     IconFileDatabase,
     IconShieldLock,
-    IconListCheck
+    IconListCheck,
+    IconBrandWhatsapp,
+    IconHelp,
+    IconSearch,
+    IconBrandTelegram
 }
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
@@ -269,15 +277,6 @@ const dashboard = {
                     display: 'feat:logs',
                     permission: 'logs:view'
                 },
-                // {
-                //     id: 'files',
-                //     title: 'Files',
-                //     type: 'item',
-                //     url: '/files',
-                //     icon: icons.IconFileDatabase,
-                //     breadcrumbs: true,
-                //     display: 'feat:files',
-                // },
                 {
                     id: 'account',
                     title: 'Account Settings',
@@ -286,6 +285,52 @@ const dashboard = {
                     icon: icons.IconSettings,
                     breadcrumbs: true,
                     display: 'feat:account'
+                },
+                {
+                    id: 'faq',
+                    title: 'FAQ',
+                    type: 'item',
+                    url: '/faq',
+                    icon: icons.IconHelp,
+                    breadcrumbs: true
+                }
+            ]
+        },
+        {
+            id: 'bots',
+            title: 'Bots',
+            type: 'group',
+            children: [
+                {
+                    id: 'telegram-session',
+                    title: 'Telegram Bots',
+                    type: 'item',
+                    url: '/telegram-session',
+                    icon: icons.IconBrandTelegram,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'wa-session',
+                    title: 'WA Bots',
+                    type: 'item',
+                    url: '/wa-session',
+                    icon: icons.IconBrandWhatsapp,
+                    breadcrumbs: true
+                }
+            ]
+        },
+        {
+            id: 'maintenance',
+            title: 'Maintenance',
+            type: 'group',
+            children: [
+                {
+                    id: 'log-viewer',
+                    title: 'Log Viewer',
+                    type: 'item',
+                    url: '/log-viewer',
+                    icon: icons.IconSearch,
+                    breadcrumbs: true
                 }
             ]
         }

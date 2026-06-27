@@ -126,6 +126,27 @@ services:
     mem_limit: 512m
     cpus: "1.0"
 
+  # ── salesman-service (Jurnal tools + Telegram webhook + customer sync) ──────
+  salesman-service:
+    build: ./trade/salesman-service
+    container_name: ob-salesman
+    restart: unless-stopped
+    env_file: ./trade/salesman-service/.env
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+      product-search-service:
+        condition: service_started
+    volumes:
+      - ./trade/data/salesman:/data
+      - /www/wwwroot/agentic.oceanbearings.co.id/packages/server/logs:/flowise-logs:ro
+    ports:
+      - "127.0.0.1:8200:8200"
+    networks:
+      - ob-net
+    mem_limit: 256m
+    cpus: "0.5"
+
   # ── go-telegram (Telegram bot) ────────────────────────────────────────────
   # Dikelola PM2 di host — tidak dijalankan via Docker
   # Uncomment kalau mau migrasi ke Docker

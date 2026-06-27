@@ -69,6 +69,10 @@ const Workspaces = Loadable(lazy(() => import('@/views/workspace')))
 const WorkspaceDetails = Loadable(lazy(() => import('@/views/workspace/WorkspaceUsers')))
 const SSOConfig = Loadable(lazy(() => import('@/views/auth/ssoConfig')))
 const SSOSuccess = Loadable(lazy(() => import('@/views/auth/ssoSuccess')))
+const WASession = Loadable(lazy(() => import('@/views/wa-session')))
+const FAQ = Loadable(lazy(() => import('@/views/faq')))
+const LogViewer = Loadable(lazy(() => import('@/views/log-viewer')))
+const TelegramSession = Loadable(lazy(() => import('@/views/telegram-session')))
 
 // ==============================|| MAIN ROUTING ||============================== //
 
@@ -343,6 +347,22 @@ const MainRoutes = {
         {
             path: '/sso-success',
             element: <SSOSuccess />
+        },
+        {
+            path: '/wa-session',
+            element: <WASession />
+        },
+        {
+            path: '/faq',
+            element: <FAQ />
+        },
+        {
+            path: '/log-viewer',
+            element: <LogViewer />
+        },
+        {
+            path: '/telegram-session',
+            element: <TelegramSession />
         }
     ]
 }

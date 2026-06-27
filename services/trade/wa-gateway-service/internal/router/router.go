@@ -213,7 +213,11 @@ func (r *Router) processMessageQueue(phone string) {
 }
 
 // reply sends a plain text message to the same chat the event came from.
+// In simulate mode (captureReply returns true) the text is captured and not sent via WA.
 func (r *Router) reply(ctx context.Context, evt *events.Message, text string) {
+	if captureReply(evt.Info.Sender.User, text) {
+		return
+	}
 	msg := &waE2E.Message{Conversation: proto.String(text)}
 	if _, err := r.wa.SendMessage(ctx, evt.Info.Chat, msg); err != nil {
 		log.Printf("SendMessage to %s error: %v", evt.Info.Chat, err)

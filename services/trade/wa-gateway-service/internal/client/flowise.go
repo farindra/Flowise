@@ -29,7 +29,7 @@ func NewFlowiseClient(baseURL, chatflowID, apiKey string) *FlowiseClient {
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		chatflowID: chatflowID,
 		apiKey:     apiKey,
-		http:       &http.Client{Timeout: 30 * time.Second},
+		http:       &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
@@ -40,8 +40,9 @@ type flowiseMessage struct {
 }
 
 type flowiseRequest struct {
-	Question string           `json:"question"`
-	History  []flowiseMessage `json:"history,omitempty"`
+	Question  string           `json:"question"`
+	SessionID string           `json:"sessionId,omitempty"`
+	History   []flowiseMessage `json:"history,omitempty"`
 }
 
 type flowiseResponse struct {
@@ -59,8 +60,9 @@ func (c *FlowiseClient) GenerateNatural(ctx context.Context, message, phoneNumbe
 	}
 
 	req := flowiseRequest{
-		Question: q,
-		History:  convertHistory(history),
+		Question:  q,
+		SessionID: phoneNumber,
+		History:   convertHistory(history),
 	}
 
 	body, err := json.Marshal(req)

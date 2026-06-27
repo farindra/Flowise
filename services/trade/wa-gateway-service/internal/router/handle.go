@@ -538,7 +538,32 @@ var fallbackProductCodeRe = regexp.MustCompile(`\b\d{2,}[\/\-]?\d{0,3}[A-Za-z0-9
 // handleTextMessage ports messageHandler.handleTextMessage (line 328-464).
 func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, body string) error {
 	phone := evt.Info.Sender.User
-	lower := strings.ToLower(body)
+	lower := strings.ToLower(strings.TrimSpace(body))
+
+	// Cart / checkout commands must bypass AI analysis — the AI misclassifies
+	// "hapus 1" as a greeting and "ubah 1 10" extracts ["1","10"] as products.
+	// Route directly to handleGeneralMessage where the regex matchers live.
+	if lower == "keranjang" || lower == "cart" ||
+		lower == "checkout" || lower == "kembali" ||
+		regexp.MustCompile(`(?i)^ubah\s+\d+\s+\d+$`).MatchString(lower) ||
+		regexp.MustCompile(`(?i)^hapus\s+\d+`).MatchString(lower) {
+		return r.handleGeneralMessage(ctx, evt, body)
+	}
+
+	// State-dependent bypasses: skip AI analysis when we're waiting for a specific
+	// user reply — AI misclassifies short inputs like "3", "dua", "ya" as greetings.
+	r.mu.Lock()
+	var acCtx, acState string
+	if ac := r.activeConvs[phone]; ac != nil {
+		acCtx = ac.Context
+		acState = ac.State
+	}
+	r.mu.Unlock()
+	// product_search context: user is selecting from a numbered list or typing
+	// a qty. AI misclassifies "1", "2", "dua", etc. as greetings.
+	if acCtx == "flowise" || acCtx == "product_search" || acState == "AWAITING_QTY_DIRECT" {
+		return r.handleGeneralMessage(ctx, evt, body)
+	}
 
 	// Panduan / bantuan bobi triggers → handleHelp.
 	for _, trigger := range []string{"panduan bobi", "bantuan bobi", "panduan"} {
@@ -605,27 +630,33 @@ func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, bod
 		}
 	}
 
-	// Products detected by AI → route to product search or direct-order flow.
-	if len(aiProducts) > 0 {
-		_ = aiQuantity // used in 3g
-		searchQuery := strings.Join(aiProducts, ", ")
-		if len(aiProducts) == 1 {
-			searchQuery = aiProducts[0]
-		}
-		return r.handleGeneralMessage(ctx, evt, searchQuery)
-	}
-
-	// AI found price/stock/order intent but no product code — route to general handler
-	// which will call handleProductSearch → Flowise fallback for natural queries.
-	if intent == "price_check" || intent == "stock_check" || intent == "order" {
+	// AI found price/stock/order intent — route to general handler.
+	// NOTE: per-keyword AI extraction (aiProducts) is intentionally not used here.
+	// Splitting "saya mau 30120" into ["30120","mau"] causes Meilisearch to return
+	// unrelated results. The original body is passed as-is; handleProductSearch will
+	// route application queries to Flowise and exact queries to Meilisearch directly.
+	_ = aiProducts
+	_ = aiQuantity
+	if intent == "price_check" || intent == "stock_check" || intent == "order" || len(aiProducts) > 0 {
 		return r.handleGeneralMessage(ctx, evt, body)
 	}
 
-	// Negation words check.
-	for _, w := range negationWords {
-		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(w) + `\b`)
-		if re.MatchString(lower) {
-			return r.handleNegationResponse(ctx, evt)
+	// Negation words check — skip if message is a question ("ada X ga?", "X ada ga?").
+	// "ga" at the end of a sentence is a question particle, not a negation.
+	isQuestion := strings.HasPrefix(lower, "ada ") ||
+		strings.HasSuffix(strings.TrimRight(lower, "? "), " ga") ||
+		strings.HasSuffix(strings.TrimRight(lower, "? "), " gak") ||
+		strings.HasSuffix(strings.TrimRight(lower, "? "), " tidak") ||
+		strings.Contains(lower, " ada ") ||
+		strings.Contains(lower, "bearing") || strings.Contains(lower, "seal") ||
+		strings.Contains(lower, "produk") || strings.Contains(lower, "barang") ||
+		strings.Contains(lower, "stok") || strings.Contains(lower, "stock")
+	if !isQuestion {
+		for _, w := range negationWords {
+			re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(w) + `\b`)
+			if re.MatchString(lower) {
+				return r.handleNegationResponse(ctx, evt)
+			}
 		}
 	}
 
@@ -637,8 +668,10 @@ func (r *Router) handleTextMessage(ctx context.Context, evt *events.Message, bod
 		}
 	}
 
-	// General message with AI-enhanced query.
-	return r.handleGeneralMessage(ctx, evt, enhancedQuery)
+	// Pass original body — AI-enhanced query strips context words that matter
+	// (e.g. "bearing" from "ada bearing untuk Mitsubishi PS100").
+	_ = enhancedQuery
+	return r.handleGeneralMessage(ctx, evt, body)
 }
 
 // extractOrderCode strips common Indonesian order trigger words from the body

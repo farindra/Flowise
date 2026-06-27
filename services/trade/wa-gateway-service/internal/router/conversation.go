@@ -63,15 +63,15 @@ func (r *Router) handleGreeting(ctx context.Context, evt *events.Message, custom
 	return r.store.AddToHistory(phone, "assistant", response)
 }
 
-// handleNegationResponse ports messageHandler.handleNegationResponse (line 1758).
+// handleNegationResponse handles when customer declines a suggestion.
 func (r *Router) handleNegationResponse(ctx context.Context, evt *events.Message) error {
 	phone := evt.Info.Sender.User
-	response := `mau Bobi tawarkan merek lain?
-
-Silakan ketik merek yang Anda inginkan dengan format: "^ [nama merek]"
-Contoh: "^ NTN" atau "^ SKF"
-
-*Catatan:* Penggunaan tanda "^" di awal pencarian akan membantu Bobi menemukan merek yang tepat untuk Anda.`
+	responses := []string{
+		"ok kak, ada yang lain yang bisa Bobi bantu? ketik kode atau nama produk yang dicari 😊",
+		"siap kak, kalau mau cari produk lain tinggal ketik kode atau nama bearing-nya ya",
+		"ok, ada kebutuhan lain? bisa ketik langsung kode atau nama produk yang dicari",
+	}
+	response := responses[rand.Intn(len(responses))]
 	r.reply(ctx, evt, response)
 	return r.store.AddToHistory(phone, "assistant", response)
 }
@@ -85,14 +85,7 @@ func (r *Router) handleContinueResponse(ctx context.Context, evt *events.Message
 		customerName = c.Nama
 	}
 
-	response := fmt.Sprintf(`Baik %s, ada yang bisa Bobi bantu lagi?
-
-Anda dapat mencari produk dengan cara:
-• Ketik kode produk (contoh: "6224.FAG")
-• Ketik nama produk dengan format "^ [nama merek]" (contoh: "^ NTN")
-• Kirim foto bearing untuk identifikasi otomatis
-
-*Catatan:* Penggunaan tanda "^" di awal pencarian akan membantu Bobi menemukan merek yang tepat untuk Anda.`, customerName)
+	response := fmt.Sprintf("ok %s, ada lagi yang bisa Bobi bantu? ketik kode atau nama produk yang dicari ya 😊", customerName)
 
 	r.reply(ctx, evt, response)
 	return r.store.AddToHistory(phone, "assistant", response)

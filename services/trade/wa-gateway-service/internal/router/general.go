@@ -54,6 +54,37 @@ var (
 	}
 )
 
+// resolveQtyWord converts Indonesian number words ("dua", "tiga", "sepuluh", etc.)
+// and common abbreviations to an integer. Returns 0 if not recognized.
+func resolveQtyWord(s string) int {
+	words := map[string]int{
+		"satu": 1, "1": 1,
+		"dua": 2, "2": 2,
+		"tiga": 3, "3": 3,
+		"empat": 4, "4": 4,
+		"lima": 5, "5": 5,
+		"enam": 6, "6": 6,
+		"tujuh": 7, "7": 7,
+		"delapan": 8, "8": 8,
+		"sembilan": 9, "9": 9,
+		"sepuluh": 10, "10": 10,
+		"sebelas": 11, "dua belas": 12, "dua puluh": 20,
+		"lima belas": 15, "dua puluh lima": 25,
+		"selusin": 12, "lusin": 12,
+		"sekotak": 10, "sebox": 10,
+	}
+	lower := strings.ToLower(strings.TrimSpace(s))
+	// Strip trailing units ("pcs", "buah", "unit", "biji")
+	for _, unit := range []string{" pcs", " buah", " unit", " biji", " pc", " lembar"} {
+		lower = strings.TrimSuffix(lower, unit)
+	}
+	lower = strings.TrimSpace(lower)
+	if v, ok := words[lower]; ok {
+		return v
+	}
+	return 0
+}
+
 // handleGeneralMessage ports messageHandler.handleGeneralMessage (line 467-1096).
 // All sub-handlers not yet ported (3c-3h) are replaced with stubReply.
 func (r *Router) handleGeneralMessage(ctx context.Context, evt *events.Message, messageBody string) error {
@@ -129,13 +160,17 @@ func (r *Router) handleGeneralMessage(ctx context.Context, evt *events.Message, 
 		switch ac.State {
 		case "AWAITING_QTY_DIRECT":
 			trimmedBody := strings.TrimSpace(messageBody)
-			match := regexp.MustCompile(`^\d+`).FindString(trimmedBody)
-			if match == "" {
-				msg := "Masukkan jumlah yang valid ya (contoh: 5, 10, 100) 😊"
-				r.reply(ctx, evt, msg)
-				return r.store.AddToHistory(phone, "assistant", msg)
+			// Resolve Indonesian number words before digit extraction.
+			qty := resolveQtyWord(trimmedBody)
+			if qty <= 0 {
+				match := regexp.MustCompile(`^\d+`).FindString(trimmedBody)
+				if match == "" {
+					msg := "Masukkan jumlah yang valid ya (contoh: 5, 10, 100 atau \"dua\", \"lima\") 😊"
+					r.reply(ctx, evt, msg)
+					return r.store.AddToHistory(phone, "assistant", msg)
+				}
+				qty, _ = strconv.Atoi(match)
 			}
-			qty, _ := strconv.Atoi(match)
 			if qty <= 0 {
 				msg := "Jumlah harus lebih dari 0 ya 😊"
 				r.reply(ctx, evt, msg)
@@ -180,6 +215,25 @@ func (r *Router) handleGeneralMessage(ctx context.Context, evt *events.Message, 
 				_ = r.store.AddToHistory(phone, "assistant", msg)
 			}
 			return nil
+		}
+	}
+
+	// Flowise-handled conversation: route all follow-up messages back to Flowise.
+	// IMPORTANT: save the user message to history FIRST so the history array stays
+	// properly alternating (user/assistant/user/assistant). If we don't, history
+	// becomes [user, assistant, assistant] which makes convertHistory assign wrong
+	// roles and Flowise loses context → replies with greeting.
+	if ac != nil && ac.Context == "flowise" {
+		_ = r.store.AddToHistory(phone, "user", messageBody)
+		var history []string
+		_, _ = r.store.Get(phone, "conversationHistory", &history)
+		name := ""
+		if c, err := r.cache.GetCustomerInfo(ctx, phone); err == nil && c != nil {
+			name = c.Nama
+		}
+		if aiMsg := r.generateNatural(ctx, messageBody, phone, name, history, false, false); aiMsg != "" {
+			r.reply(ctx, evt, aiMsg)
+			return r.store.AddToHistory(phone, "assistant", aiMsg)
 		}
 	}
 
@@ -239,8 +293,20 @@ func (r *Router) handleGeneralMessage(ctx context.Context, evt *events.Message, 
 
 		// Number selection from last search results.
 		if ac.LastResults != nil && len(ac.LastResults) > 0 {
-			// Natural question (not a code/brand/number) → Flowise, skip number-selection.
-			if !hasProductCode && !hasBrand {
+			// Pure number/selection pattern → handle directly, skip Flowise.
+			isNumberSelection := regexp.MustCompile(`^[\d][0-9xX,\s]*$`).MatchString(trimmed)
+			if isNumberSelection {
+				handled, err := r.handleNumberSelection(ctx, evt, trimmed)
+				if err != nil {
+					return err
+				}
+				if handled {
+					return nil
+				}
+			}
+
+			// Natural question (not a code/brand/number) → Flowise.
+			if !hasProductCode && !hasBrand && !isNumberSelection {
 				var history []string
 				_, _ = r.store.Get(phone, "conversationHistory", &history)
 				name := ""

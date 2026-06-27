@@ -181,8 +181,12 @@ func (r *Router) formatSearchResults(ctx context.Context, phone string, results 
 			finalPrice = float64(product.HargaNum.NonCustomer)
 		}
 
-		response += fmt.Sprintf("⭐ *%d. %s*\n", i+1, product.Kode)
-		response += fmt.Sprintf("   📝 Nama: %s\n", product.Nama)
+		title := product.Nama
+		if product.Brand != "" {
+			title = product.Nama + "." + product.Brand
+		}
+		response += fmt.Sprintf("⭐ *%d. %s*\n", i+1, title)
+		response += fmt.Sprintf("   📝 Kode: %s\n", product.Kode)
 		if product.Stok > 0 {
 			response += fmt.Sprintf("   📦 Stok: %d tersedia\n", product.Stok)
 		} else {
@@ -208,11 +212,165 @@ func (r *Router) formatSearchResults(ctx context.Context, phone string, results 
 	return response, nil
 }
 
+// flowiseKodeRe matches "Kode: SF 05 A 84" or "Kode: 58767416" in Flowise replies.
+var flowiseKodeRe = regexp.MustCompile(`(?i)Kode\s*:\s*([^\|\n\r,]+)`)
+
+// extractFlowiseProducts parses all "Kode: ..." entries from a Flowise reply,
+// looks each one up in Meilisearch, and returns the matched products.
+// Returns nil if no product codes are found in the reply.
+func (r *Router) extractFlowiseProducts(ctx context.Context, aiMsg string) []client.Product {
+	kodeMatches := flowiseKodeRe.FindAllStringSubmatch(aiMsg, -1)
+	if len(kodeMatches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var products []client.Product
+	for _, m := range kodeMatches {
+		kode := strings.TrimSpace(m[1])
+		if kode == "" || seen[kode] {
+			continue
+		}
+		seen[kode] = true
+		results, err := r.search.Search(ctx, kode, 1)
+		if err != nil || len(results) == 0 {
+			log.Printf("extractFlowiseProducts: search %q returned 0 results: %v", kode, err)
+			continue
+		}
+		products = append(products, results[0])
+	}
+	return products
+}
+
+// vehicleTerms is used by isApplicationQuery to detect vehicle-application searches
+// that should be resolved by Flowise (bearing lookup by car) rather than keyword search.
+var vehicleTerms = []string{
+	// brands
+	"honda", "toyota", "mitsubishi", "daihatsu", "suzuki", "nissan", "isuzu",
+	"hyundai", "kia", "mazda", "bmw", "mercedes", "benz", "vw", "volkswagen",
+	"ford", "chevrolet", "wuling", "chery", "dfsk", "hino", "fuso",
+	// models (common Indonesian market)
+	"brio", "jazz", "freed", "civic", "accord", "crv", "hrv", "brv",
+	"avanza", "xenia", "innova", "rush", "fortuner", "hilux", "kijang",
+	"calya", "sigra", "agya", "ayla", "terios", "sirion", "gran max",
+	"ertiga", "carry", "apv", "swift", "ignis",
+	"l300", "l200", "strada", "pajero", "triton", "galant", "colt",
+	"grand livina", "x-trail", "serena", "navara",
+	"yaris", "vios", "camry", "alphard", "vellfire", "land cruiser",
+	"trax", "captiva",
+	// application parts
+	"roda belakang", "roda depan", "as roda", "gardan", "transmisi",
+	"setir", "kemudi", "kopling", "koppeling", "mesin", "pompa air",
+}
+
+// isApplicationQuery returns true when query refers to a vehicle application
+// (brand/model + part) that requires Flowise to resolve the bearing code first.
+func isApplicationQuery(query string) bool {
+	lower := strings.ToLower(query)
+	// Must also contain a bearing-related word to distinguish from pure vehicle questions.
+	hasBearingWord := strings.Contains(lower, "bearing") ||
+		strings.Contains(lower, "laher") ||
+		strings.Contains(lower, "seal") ||
+		strings.Contains(lower, "belt") ||
+		strings.Contains(lower, "as ") ||
+		strings.Contains(lower, "bantalan")
+	if !hasBearingWord {
+		return false
+	}
+	for _, term := range vehicleTerms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
 // handleProductSearch ports messageHandler.handleProductSearch (line 1099).
 func (r *Router) handleProductSearch(ctx context.Context, evt *events.Message, query string) error {
 	phone := evt.Info.Sender.User
 
 	_ = r.store.AddToHistory(phone, "user", query)
+
+	// Application query (car model + bearing/part): let Flowise resolve the
+	// correct bearing code first, then use trade_product_search tool.
+	// Do NOT keyword-search per-word — that returns garbage for "brio" or "avanza".
+	if isApplicationQuery(query) {
+		customerName := "Pelanggan"
+		if c, err := r.cache.GetCustomerInfo(ctx, phone); err == nil && c != nil && c.Nama != "" {
+			customerName = c.Nama
+		}
+		// Send instant acknowledgement so user knows bot is working,
+		// before the Flowise call which can take several seconds.
+		ackMsg := fmt.Sprintf("Bentar ya %s, Bobi lagi cek kode yang pas dulu di sistem... 🔍", customerName)
+		r.reply(ctx, evt, ackMsg)
+
+		var history []string
+		_, _ = r.store.Get(phone, "conversationHistory", &history)
+		flowiseCtx := fmt.Sprintf(
+			"[Pertanyaan aplikasi kendaraan: customer menanyakan bearing/part untuk kendaraan tertentu. "+
+				"Tugas: 1) Tentukan kode bearing yang tepat untuk aplikasi ini. "+
+				"2) Cari kode tersebut menggunakan tool trade_product_search. "+
+				"3) Tampilkan hasilnya beserta keterangan kendaraannya.] %s", query)
+		if aiMsg := r.generateNatural(ctx, flowiseCtx, phone, customerName, history, false, false); aiMsg != "" {
+			_ = r.store.AddToHistory(phone, "assistant", aiMsg)
+
+			// Extract product codes from Flowise's reply and look them up in
+			// Meilisearch so we can show a proper numbered list that wa-gateway
+			// controls. This prevents Flowise from being relied on for multi-turn
+			// state (it forgets context on short replies like "3" or "dua").
+			products := r.extractFlowiseProducts(ctx, aiMsg)
+			if len(products) == 1 {
+				// Single product found: send Flowise's narrative + ask for qty.
+				r.reply(ctx, evt, aiMsg)
+				r.mu.Lock()
+				ac := r.activeConvs[phone]
+				if ac == nil {
+					ac = &ActiveConv{}
+					r.activeConvs[phone] = ac
+				}
+				ac.Active = true
+				ac.Context = "product_search"
+				ac.LastResults = products
+				ac.State = "AWAITING_QTY_DIRECT"
+				ac.LastMessageTime = nowMs()
+				r.mu.Unlock()
+			} else if len(products) > 1 {
+				// Multiple products: send Flowise's narrative as intro, then show
+				// our standard numbered list so the user can pick by number.
+				r.reply(ctx, evt, aiMsg)
+				listMsg, err := r.formatSearchResults(ctx, phone, products, query)
+				if err == nil && listMsg != "" {
+					r.reply(ctx, evt, listMsg)
+					_ = r.store.AddToHistory(phone, "assistant", listMsg)
+				}
+				r.mu.Lock()
+				ac := r.activeConvs[phone]
+				if ac == nil {
+					ac = &ActiveConv{}
+					r.activeConvs[phone] = ac
+				}
+				ac.Active = true
+				ac.Context = "product_search"
+				ac.LastResults = products
+				ac.State = ""
+				ac.LastMessageTime = nowMs()
+				r.mu.Unlock()
+			} else {
+				// No parseable product codes — show Flowise reply as-is.
+				r.reply(ctx, evt, aiMsg)
+				r.mu.Lock()
+				ac := r.activeConvs[phone]
+				if ac == nil {
+					ac = &ActiveConv{}
+					r.activeConvs[phone] = ac
+				}
+				ac.LastResults = nil
+				ac.Context = "flowise"
+				r.mu.Unlock()
+			}
+			return nil
+		}
+		// Flowise unavailable — fall through to keyword search.
+	}
 
 	// Hashtag order format (#KODE #QTY).
 	hashtagMatches := searchHashtagRe.FindAllStringSubmatch(query, -1)
@@ -230,45 +388,24 @@ func (r *Router) handleProductSearch(ctx context.Context, evt *events.Message, q
 		return r.handleHashtagOrder(ctx, evt, items)
 	}
 
-	// AI analysis for keywords, profanity, enhancedQuery.
-	cleanedQuery := query
+	// Extract keywords using the local stopword filter — no AI call here.
+	// AI keyword extraction is intentionally removed: it incorrectly keeps filler
+	// words like "mau" from "saya mau 30120", causing unrelated Meilisearch results.
+	// extractProductKeywords already strips all Indonesian stop words correctly.
+	extracted := r.extractProductKeywords(query)
 	var queries []string
-	var hasProfanity bool
-
-	analysis, err := r.ai.AnalyzeMessage(ctx, query, phone)
-	if err != nil {
-		log.Printf("handleProductSearch: AnalyzeMessage error for %s: %v", phone, err)
-	} else if analysis != nil {
-		hasProfanity = analysis.ContainsProfanity
-		if analysis.EnhancedQuery != "" {
-			cleanedQuery = analysis.EnhancedQuery
-		}
-		if len(analysis.Keywords) > 0 {
-			queries = analysis.Keywords
-		}
-	}
-
-	if hasProfanity {
-		msg := "Mohon gunakan bahasa yang sopan dalam berkomunikasi. Kami tetap akan memproses permintaan Anda."
-		r.reply(ctx, evt, msg)
-		_ = r.store.AddToHistory(phone, "assistant", msg)
-	}
-
-	if len(queries) == 0 {
-		extracted := r.extractProductKeywords(cleanedQuery)
-		if r.isValidProductQuery(extracted) {
-			queries = []string{extracted}
-		} else {
-			log.Printf("handleProductSearch: query too generic for %s: %q", phone, extracted)
-			helpMsg := "Untuk pencarian yang lebih akurat, mohon sertakan:\n" +
-				"• Kode produk (contoh: bearing 6205)\n" +
-				"• Pencarian Merk spesifik menggunakan tanda ^ (contoh: ^ SKF)\n" +
-				"• Spesifikasi lengkap (contoh: bearing 6205 2RS)\n" +
-				"• Upload foto berisi list kode bearing juga bisa\n\n" +
-				"Atau ketik */help* untuk panduan lengkap."
-			r.reply(ctx, evt, helpMsg)
-			return r.store.AddToHistory(phone, "assistant", helpMsg)
-		}
+	if r.isValidProductQuery(extracted) {
+		queries = []string{extracted}
+	} else {
+		log.Printf("handleProductSearch: query too generic for %s: %q", phone, extracted)
+		helpMsg := "Untuk pencarian yang lebih akurat, mohon sertakan:\n" +
+			"• Kode produk (contoh: bearing 6205)\n" +
+			"• Pencarian Merk spesifik menggunakan tanda ^ (contoh: ^ SKF)\n" +
+			"• Spesifikasi lengkap (contoh: bearing 6205 2RS)\n" +
+			"• Upload foto berisi list kode bearing juga bisa\n\n" +
+			"Atau ketik */help* untuk panduan lengkap."
+		r.reply(ctx, evt, helpMsg)
+		return r.store.AddToHistory(phone, "assistant", helpMsg)
 	}
 
 	// Search products for each query term.
@@ -301,9 +438,17 @@ func (r *Router) handleProductSearch(ctx context.Context, evt *events.Message, q
 		// Try Flowise — tell it the search was empty so it searches by bearing code instead of asking questions.
 		var history []string
 		_, _ = r.store.Get(phone, "conversationHistory", &history)
-		flowiseCtx := fmt.Sprintf("[Pencarian '%s' tidak ditemukan di katalog. Gunakan pengetahuanmu untuk menentukan kode bearing yang tepat, lalu langsung cari via tool ob_product_search.] %s", strings.Join(queries, ", "), query)
+		flowiseCtx := fmt.Sprintf("[Pencarian '%s' tidak ditemukan di katalog. Gunakan pengetahuanmu untuk menentukan kode bearing yang tepat, lalu langsung cari via tool trade_product_search.] %s", strings.Join(queries, ", "), query)
 		if aiMsg := r.generateNatural(ctx, flowiseCtx, phone, customerName, history, false, false); aiMsg != "" {
 			r.reply(ctx, evt, aiMsg)
+			// Flowise handled it — clear LastResults so the next number typed by user
+			// is not misinterpreted as a selection from a previous search list.
+			r.mu.Lock()
+			if ac := r.activeConvs[phone]; ac != nil {
+				ac.LastResults = nil
+				ac.Context = "flowise"
+			}
+			r.mu.Unlock()
 			return r.store.AddToHistory(phone, "assistant", aiMsg)
 		}
 

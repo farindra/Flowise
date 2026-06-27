@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
@@ -85,52 +86,72 @@ func New(ctx context.Context, dataDir string) (*Client, error) {
 
 // Connect connects to WhatsApp. If the device is not yet paired, it prints a
 // QR code to stdout (scan it from WhatsApp -> Linked Devices) and blocks
-// until pairing succeeds, fails, or times out.
+// until pairing succeeds. On QR timeout it automatically disconnects and
+// retries indefinitely so a new QR is always available without restarting.
 func (c *Client) Connect(ctx context.Context) error {
 	if c.WA.Store.ID != nil {
 		return c.WA.Connect()
 	}
 
-	qrChan, err := c.WA.GetQRChannel(ctx)
-	if err != nil {
-		return fmt.Errorf("get qr channel: %w", err)
-	}
-	if err := c.WA.Connect(); err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
+	for {
+		qrChan, err := c.WA.GetQRChannel(ctx)
+		if err != nil {
+			return fmt.Errorf("get qr channel: %w", err)
+		}
+		if err := c.WA.Connect(); err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
 
-	var qrReadyClosed bool
-	for evt := range qrChan {
-		switch evt.Event {
-		case whatsmeow.QRChannelEventCode:
-			fmt.Println("=== Scan QR code ini dengan WhatsApp -> Linked Devices ===")
-			qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-			if code, err := qr.Encode(evt.Code, qr.L); err == nil {
-				if err := os.WriteFile(c.qrPath, code.PNG(), 0o644); err != nil {
-					fmt.Println("gagal tulis QR PNG:", err)
+		timedOut := false
+		var qrReadyClosed bool
+		for evt := range qrChan {
+			switch evt.Event {
+			case whatsmeow.QRChannelEventCode:
+				fmt.Println("=== Scan QR code ini dengan WhatsApp -> Linked Devices ===")
+				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				if code, err := qr.Encode(evt.Code, qr.L); err == nil {
+					if err := os.WriteFile(c.qrPath, code.PNG(), 0o644); err != nil {
+						fmt.Println("gagal tulis QR PNG:", err)
+					} else {
+						fmt.Println("QR PNG ditulis ke", c.qrPath)
+					}
+				}
+				if !qrReadyClosed {
+					close(c.qrReady)
+					qrReadyClosed = true
+				}
+			case "success":
+				fmt.Println("=== Pairing sukses ===")
+				_ = os.Remove(c.qrPath)
+				return nil
+			case "timeout":
+				fmt.Println("=== QR code timeout, generate QR baru... ===")
+				_ = os.Remove(c.qrPath)
+				c.qrReady = make(chan struct{})
+				qrReadyClosed = false
+				timedOut = true
+			default:
+				if evt.Error != nil {
+					fmt.Println("=== Pairing error:", evt.Error, "===")
 				} else {
-					fmt.Println("QR PNG ditulis ke", c.qrPath)
+					fmt.Println("=== Login event:", evt.Event, "===")
 				}
 			}
-			if !qrReadyClosed {
-				close(c.qrReady)
-				qrReadyClosed = true
-			}
-		case "success":
-			fmt.Println("=== Pairing sukses ===")
-			_ = os.Remove(c.qrPath)
-		case "timeout":
-			fmt.Println("=== QR code timeout, restart service untuk coba lagi ===")
-			_ = os.Remove(c.qrPath)
-		default:
-			if evt.Error != nil {
-				fmt.Println("=== Pairing error:", evt.Error, "===")
-			} else {
-				fmt.Println("=== Login event:", evt.Event, "===")
-			}
+		}
+
+		if !timedOut {
+			return nil
+		}
+
+		// Disconnect dulu sebelum minta QR baru
+		c.WA.Disconnect()
+		fmt.Println("=== Reconnect dalam 3 detik untuk QR baru... ===")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
 		}
 	}
-	return nil
 }
 
 // Disconnect closes the WhatsApp connection.
@@ -138,10 +159,59 @@ func (c *Client) Disconnect() {
 	c.WA.Disconnect()
 }
 
+// IsConnected returns true if the WA client is currently connected.
+func (c *Client) IsConnected() bool {
+	return c.WA.IsConnected()
+}
+
+// IsLoggedIn returns true if the WA client is logged in (has device ID).
+func (c *Client) IsLoggedIn() bool {
+	return c.WA.IsLoggedIn()
+}
+
+// PhoneNumber returns the connected phone number, or empty string.
+func (c *Client) PhoneNumber() string {
+	if c.WA.Store.ID == nil {
+		return ""
+	}
+	return c.WA.Store.ID.User
+}
+
+// Logout disconnects and removes the device credentials, then reconnects to
+// start the QR pairing flow automatically.
+func (c *Client) Logout(ctx context.Context) error {
+	if err := c.WA.Logout(ctx); err != nil {
+		c.WA.Disconnect()
+	}
+	_ = os.Remove(c.qrPath)
+	// Reset qrReady so PairPhone can be called after reconnect
+	c.qrReady = make(chan struct{})
+	// Reconnect in background to start QR flow
+	go func() {
+		if err := c.Connect(context.Background()); err != nil {
+			fmt.Println("reconnect setelah logout error:", err)
+		}
+	}()
+	return nil
+}
+
 // handleEvent dispatches incoming whatsmeow events. When an external handler
 // has been registered via SetEventHandler, it is called instead of the Phase 1
 // echo. This lets main.go wire the router without touching waclient internals.
 func (c *Client) handleEvent(rawEvt interface{}) {
+	// Intercept LoggedOut regardless of external handler — auto-restart QR flow
+	if _, ok := rawEvt.(*events.LoggedOut); ok {
+		fmt.Println("=== Device removed / LoggedOut — memulai QR flow baru dalam 3 detik... ===")
+		_ = os.Remove(c.qrPath)
+		c.qrReady = make(chan struct{})
+		go func() {
+			time.Sleep(3 * time.Second)
+			if err := c.Connect(context.Background()); err != nil {
+				fmt.Println("reconnect setelah LoggedOut error:", err)
+			}
+		}()
+	}
+
 	if c.externalHandler != nil {
 		c.externalHandler(rawEvt)
 		return

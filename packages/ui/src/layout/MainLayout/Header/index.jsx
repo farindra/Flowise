@@ -250,7 +250,7 @@ const Header = ({ handleLeftDrawerToggle }) => {
                     </ButtonBase>
                 )}
             </Box>
-            {isCloud || isOpenSource ? (
+            {false ? (
                 <Box
                     sx={{
                         flexGrow: 1,
