@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -274,7 +275,7 @@ func (s *WASession) handleMessage(evt *events.Message) {
 		return
 	}
 
-	msg := &waE2E.Message{Conversation: proto.String(reply)}
+	msg := &waE2E.Message{Conversation: proto.String(mdToWA(reply))}
 	if _, err := s.waClient.SendMessage(ctx, evt.Info.Chat, msg); err != nil {
 		fmt.Printf("[%s] Send error: %v\n", s.name, err)
 	}
@@ -283,8 +284,8 @@ func (s *WASession) handleMessage(evt *events.Message) {
 func (s *WASession) callFlowise(ctx context.Context, question, sessionID string) (string, error) {
 	url := s.flowiseBaseURL + "/api/v1/prediction/" + s.chatflowID
 	body, _ := json.Marshal(map[string]any{
-		"question":  question,
-		"sessionId": sessionID,
+		"question": question,
+		"chatId":   sessionID,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -314,6 +315,37 @@ func (s *WASession) callFlowise(ctx context.Context, question, sessionID string)
 		return string(data), nil
 	}
 	return result.Text, nil
+}
+
+var (
+	waReBold    = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	waReItalic  = regexp.MustCompile(`(?m)(?:^|[^*])\*([^*\n]+)\*(?:[^*]|$)`)
+	waReHeading = regexp.MustCompile(`(?m)^#{1,3}\s+(.+)$`)
+	waReBullet  = regexp.MustCompile(`(?m)^\*[ \t]+`)
+	waReLink    = regexp.MustCompile(`\[([^\]]+)\]\s*\(([^)]+)\)`)
+	waReHRule   = regexp.MustCompile(`(?m)^---+$`)
+)
+
+// mdToWA converts Markdown to WhatsApp-compatible format.
+// WhatsApp: *bold*, _italic_, ~strike~, `mono`
+func mdToWA(s string) string {
+	s = waReHeading.ReplaceAllString(s, "*$1*")
+	s = waReBold.ReplaceAllString(s, "*$1*")
+	s = waReBullet.ReplaceAllString(s, "• ")
+	s = waReLink.ReplaceAllStringFunc(s, func(m string) string {
+		parts := waReLink.FindStringSubmatch(m)
+		if len(parts) < 3 {
+			return m
+		}
+		text := strings.TrimSpace(parts[1])
+		url := strings.TrimSpace(parts[2])
+		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+			return text + ": " + url
+		}
+		return text
+	})
+	s = waReHRule.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // extractText gets plain text from any message type
