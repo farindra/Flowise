@@ -26,6 +26,7 @@ import internalPredictionRouter from './internal-predictions'
 import leadsRouter from './leads'
 import loadPromptRouter from './load-prompts'
 import logsRouter from './log'
+import logSearchRouter from './log-search'
 import marketplacesRouter from './marketplaces'
 import mcpEndpointRouter from './mcp-endpoint'
 import mcpServerRouter from './mcp-server'
@@ -147,6 +148,7 @@ router.use('/workspaceuser', workspaceUserRouter)
 router.use('/account', accountRouter)
 router.use('/loginmethod', loginMethodRouter)
 router.use('/logs', IdentityManager.checkFeatureByPlan('feat:logs'), logsRouter)
+router.use('/log-search', logSearchRouter)
 // router.use('/files', IdentityManager.checkFeatureByPlan('feat:files'), filesRouter)
 
 router.use('/wa-session', waSessionRouter)

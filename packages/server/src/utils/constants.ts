@@ -46,6 +46,7 @@ export const WHITELIST_URLS = [
     '/api/v1/telegram-session/',
     '/api/v1/wa-session/',
     '/api/v1/faq/',
+    '/api/v1/log-search/',
     AzureSSO.LOGIN_URI,
     AzureSSO.LOGOUT_URI,
     AzureSSO.CALLBACK_URI,

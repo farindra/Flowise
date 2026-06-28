@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -262,6 +263,16 @@ func (s *WASession) SendMessage(ctx context.Context, phone, text string) error {
 	return err
 }
 
+const errCodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+func newErrorCode() string {
+	b := make([]byte, 5)
+	for i := range b {
+		b[i] = errCodeChars[rand.Intn(len(errCodeChars))]
+	}
+	return string(b)
+}
+
 func parseJID(phone string) (types.JID, error) {
 	return types.ParseJID(phone + "@s.whatsapp.net")
 }
@@ -283,11 +294,16 @@ func (s *WASession) handleMessage(evt *events.Message) {
 
 	reply, err := s.callFlowise(ctx, text, sessionID)
 	if err != nil {
-		fmt.Printf("[%s] Flowise error (%s): %v\n", s.name, senderPhone, err)
-		if s.humanContact != "" {
-			reply = fmt.Sprintf("Maaf, terjadi gangguan. Silakan hubungi %s", s.humanContact)
+		code := newErrorCode()
+		if ctx.Err() != nil {
+			fmt.Printf("[%s] [%s] timeout (%s)\n", s.name, code, senderPhone)
+			reply = fmt.Sprintf("🔴 Server sedang sibuk, coba lagi nanti. (kode: %s)", code)
 		} else {
-			return
+			fmt.Printf("[%s] [%s] error (%s): %v\n", s.name, code, senderPhone, err)
+			reply = fmt.Sprintf("⚠️ Terjadi kesalahan, silakan coba kembali. (kode: %s)", code)
+		}
+		if s.humanContact != "" {
+			reply += "\nAtau hubungi admin: " + s.humanContact
 		}
 	}
 	if reply == "" {

@@ -33,6 +33,31 @@ function dateMatches(line, date) {
     return line.includes(date) || line.includes(slashed)
 }
 
+// Parse log line into structured fields
+// Flowise format: "2026-06-28 10:00:00 [ERROR]: message"
+// Go service format: "2026/06/28 10:00:00 [session] [CODE] error (phone): message"
+function parseLine(line, source) {
+    const result = { source, line, level: 'INFO', code: null, time: null, message: line }
+
+    // Extract time: "2026-06-28 10:00:00" or "2026/06/28 10:00:00"
+    const timeMatch = line.match(/^(\d{4}[/-]\d{2}[/-]\d{2}[ T]\d{2}:\d{2}:\d{2})/)
+    if (timeMatch) result.time = timeMatch[1].replace(/\//g, '-')
+
+    // Extract error code: [XXXXX] 5-char alphanumeric
+    const codeMatch = line.match(/\[([A-Z0-9]{5})\]/)
+    if (codeMatch) result.code = codeMatch[1]
+
+    // Determine level
+    if (/\[ERROR\]|error |timeout /i.test(line)) result.level = 'ERROR'
+    else if (/\[WARN\]|warning/i.test(line)) result.level = 'WARN'
+
+    // Extract message body (after timestamp + brackets)
+    const msgMatch = line.match(/(?:\d{2}:\d{2}:\d{2}[,.]?\d*\s)(.+)$/)
+    if (msgMatch) result.message = msgMatch[1]
+
+    return result
+}
+
 async function searchLogs(query, date) {
     const results = []
     const q = query.toLowerCase()
@@ -44,7 +69,7 @@ async function searchLogs(query, date) {
         const lines = await readLinesFromFile(filePath)
         for (const line of lines) {
             if (line.toLowerCase().includes(q)) {
-                results.push({ source: 'flowise', line })
+                results.push(parseLine(line, 'flowise'))
             }
         }
     }
@@ -54,7 +79,7 @@ async function searchLogs(query, date) {
         const lines = await readLinesFromFile(file)
         for (const line of lines) {
             if (dateMatches(line, date) && line.toLowerCase().includes(q)) {
-                results.push({ source, line })
+                results.push(parseLine(line, source))
             }
         }
     }
@@ -105,5 +130,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, '127.0.0.1', () => {
-    console.log(`log-search listening on :${PORT}`)
+    process.stdout.write(`log-search listening on :${PORT}\n`)
 })
