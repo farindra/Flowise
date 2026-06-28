@@ -87,4 +87,6 @@ extensions/
 apps/*/
 !apps/oss-app/
 services/go-telegram/go-telegram
+services/go-wa/go-wa
 services/go-wa/bin/
+services/go-crm/go-crm

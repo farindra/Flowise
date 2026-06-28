@@ -30,28 +30,57 @@ function proxy(method: string, pathFn: (req: Request) => string) {
         })
 
         if (method !== 'GET' && method !== 'DELETE') {
-            req.pipe(proxyReq)
-        } else {
-            proxyReq.end()
+            // Express json middleware already consumed the stream — serialize parsed body
+            const bodyStr = req.body !== undefined ? JSON.stringify(req.body) : ''
+            proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyStr))
+            proxyReq.write(bodyStr)
         }
+        proxyReq.end()
     }
 }
 
 // Sessions CRUD
-router.get('/sessions', proxy('GET', () => '/api/sessions'))
-router.post('/sessions', proxy('POST', () => '/api/sessions'))
-router.put('/sessions/:id', proxy('PUT', (req) => `/api/sessions/${req.params.id}`))
-router.delete('/sessions/:id', proxy('DELETE', (req) => `/api/sessions/${req.params.id}`))
+router.get(
+    '/sessions',
+    proxy('GET', () => '/api/sessions')
+)
+router.post(
+    '/sessions',
+    proxy('POST', () => '/api/sessions')
+)
+router.put(
+    '/sessions/:id',
+    proxy('PUT', (req) => `/api/sessions/${req.params.id}`)
+)
+router.delete(
+    '/sessions/:id',
+    proxy('DELETE', (req) => `/api/sessions/${req.params.id}`)
+)
 
 // Per-session control
-router.get('/sessions/:id/status', proxy('GET', (req) => `/api/sessions/${req.params.id}/status`))
-router.get('/sessions/:id/qr', proxy('GET', (req) => `/api/sessions/${req.params.id}/qr`))
-router.post('/sessions/:id/connect', proxy('POST', (req) => `/api/sessions/${req.params.id}/connect`))
-router.post('/sessions/:id/logout', proxy('POST', (req) => `/api/sessions/${req.params.id}/logout`))
-router.post('/sessions/:id/pair-phone', proxy('POST', (req) => {
-    const phone = req.query.phone as string
-    const path = `/api/sessions/${req.params.id}/pair-phone`
-    return phone ? `${path}?phone=${encodeURIComponent(phone)}` : path
-}))
+router.get(
+    '/sessions/:id/status',
+    proxy('GET', (req) => `/api/sessions/${req.params.id}/status`)
+)
+router.get(
+    '/sessions/:id/qr',
+    proxy('GET', (req) => `/api/sessions/${req.params.id}/qr`)
+)
+router.post(
+    '/sessions/:id/connect',
+    proxy('POST', (req) => `/api/sessions/${req.params.id}/connect`)
+)
+router.post(
+    '/sessions/:id/logout',
+    proxy('POST', (req) => `/api/sessions/${req.params.id}/logout`)
+)
+router.post(
+    '/sessions/:id/pair-phone',
+    proxy('POST', (req) => {
+        const phone = req.query.phone as string
+        const path = `/api/sessions/${req.params.id}/pair-phone`
+        return phone ? `${path}?phone=${encodeURIComponent(phone)}` : path
+    })
+)
 
 export default router

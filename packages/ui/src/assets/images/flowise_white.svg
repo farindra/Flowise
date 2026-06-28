@@ -1,11 +1,8 @@
-<svg width="160" height="40" viewBox="0 0 160 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Agent network icon — indigo untuk light background -->
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
   <circle cx="10" cy="20" r="5" fill="#4f46e5"/>
   <circle cx="28" cy="7" r="5" fill="#4f46e5"/>
   <circle cx="28" cy="33" r="5" fill="#4f46e5"/>
   <line x1="15" y1="18" x2="23" y2="10" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/>
   <line x1="15" y1="22" x2="23" y2="30" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/>
   <line x1="28" y1="12" x2="28" y2="28" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/>
-  <!-- Text gelap untuk light background -->
-  <text x="44" y="26" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="17" font-weight="700" letter-spacing="0.2" fill="#1e1b4b">Agentic OB</text>
 </svg>

@@ -199,36 +199,14 @@ const VectorStoreConfigure = () => {
     }
 
     const checkMandatoryFields = () => {
-        let canSubmit = true
-        const inputParams = (selectedVectorStoreProvider?.inputParams ?? []).filter((inputParam) => !inputParam.hidden)
-        for (const inputParam of inputParams) {
-            if (!inputParam.optional && (!selectedVectorStoreProvider.inputs[inputParam.name] || !selectedVectorStoreProvider.credential)) {
-                if (inputParam.type === 'credential' && !selectedVectorStoreProvider.credential) {
-                    canSubmit = false
-                    break
-                } else if (inputParam.type !== 'credential' && !selectedVectorStoreProvider.inputs[inputParam.name]) {
-                    canSubmit = false
-                    break
-                }
-            }
-        }
-
-        const inputParams2 = (selectedEmbeddingsProvider?.inputParams ?? []).filter((inputParam) => !inputParam.hidden)
-        for (const inputParam of inputParams2) {
-            if (!inputParam.optional && (!selectedEmbeddingsProvider.inputs[inputParam.name] || !selectedEmbeddingsProvider.credential)) {
-                if (inputParam.type === 'credential' && !selectedEmbeddingsProvider.credential) {
-                    canSubmit = false
-                    break
-                } else if (inputParam.type !== 'credential' && !selectedEmbeddingsProvider.inputs[inputParam.name]) {
-                    canSubmit = false
-                    break
-                }
-            }
-        }
+        // Only require that a vector store and embeddings provider have been selected.
+        // Field-level validation is handled server-side; overly strict client validation
+        // was blocking legitimate saves (e.g. node-connection-type fields like Embeddings).
+        const canSubmit = !!(selectedVectorStoreProvider?.name && selectedEmbeddingsProvider?.name)
 
         if (!canSubmit) {
             enqueueSnackbar({
-                message: 'Please fill in all mandatory fields.',
+                message: 'Please select a Vector Store and Embeddings provider.',
                 options: {
                     key: new Date().getTime() + Math.random(),
                     variant: 'warning',

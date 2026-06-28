@@ -89,8 +89,8 @@ type TelegramSendResult struct {
 }
 
 type FlowiseRequest struct {
-	Question  string `json:"question"`
-	SessionID string `json:"sessionId,omitempty"`
+	Question string `json:"question"`
+	ChatID   string `json:"chatId,omitempty"`
 }
 
 type FlowiseResponse struct {
@@ -275,7 +275,7 @@ func (b *Bot) processMessage(msg *Message) {
 }
 
 func (b *Bot) callFlowise(ctx context.Context, question, sessionID string) (string, error) {
-	payload := FlowiseRequest{Question: question, SessionID: sessionID}
+	payload := FlowiseRequest{Question: question, ChatID: sessionID}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.flowiseURL, bytes.NewReader(body))
 	if err != nil {

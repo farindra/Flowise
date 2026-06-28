@@ -19,6 +19,9 @@ export const ConfigProvider = ({ children }) => {
                     ...currentSettingsData.data
                 }
                 setConfig(finalData)
+                if (finalData.APP_NAME) {
+                    document.title = finalData.APP_NAME
+                }
                 if (finalData.PLATFORM_TYPE) {
                     if (finalData.PLATFORM_TYPE === 'enterprise') {
                         setEnterpriseLicensed(true)
