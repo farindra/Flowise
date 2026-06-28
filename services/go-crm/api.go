@@ -77,6 +77,33 @@ func handleCreateLead(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Auto-schedule follow-up notifications D+1, D+3, D+7
+	name := body.Name
+	if name == "" {
+		name = "Bapak/Ibu"
+	}
+	templates := []struct {
+		days int
+		msg  string
+	}{
+		{1, "Assalamu'alaikum " + name + ", terima kasih sudah menghubungi Al Azhar Memorial Garden. Ada pertanyaan mengenai kavling yang bisa kami bantu? Konsultan kami siap di WA: 085 888 555 200. Jazakallahu Khayran."},
+		{3, "Assalamu'alaikum " + name + ", kami dari Al Azhar Memorial Garden kembali menyapa. Apakah Bapak/Ibu sudah sempat mempertimbangkan pilihan kavling? Kami bisa jadwalkan kunjungan ke lahan Karawang. Hubungi kami di 085 888 555 200."},
+		{7, "Assalamu'alaikum " + name + ", semoga Bapak/Ibu dan keluarga sehat selalu. Al Azhar Memorial Garden — pemakaman muslim terpercaya — siap melayani kapan pun dibutuhkan. Info: 085 888 555 200. Jazakallahu Khayran."},
+	}
+	leadID := id
+	for _, t := range templates {
+		notif := &Notification{
+			LeadID:         &leadID,
+			Channel:        "wa",
+			Type:           "lead_followup",
+			RecipientPhone: body.Phone,
+			Message:        t.msg,
+			ScheduledAt:    time.Now().UTC().AddDate(0, 0, t.days),
+		}
+		_, _ = dbCreateNotif(r.Context(), notif)
+	}
+
 	w.WriteHeader(http.StatusCreated)
 	jsonOK(w, map[string]string{"id": id})
 }
