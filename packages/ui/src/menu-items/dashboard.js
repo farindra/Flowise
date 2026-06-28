@@ -112,15 +112,19 @@ const dashboard = {
                     breadcrumbs: true,
                     permission: 'assistants:view'
                 },
-                ...(showMarketplaces ? [{
-                    id: 'marketplaces',
-                    title: 'Marketplaces',
-                    type: 'item',
-                    url: '/marketplaces',
-                    icon: icons.IconBuildingStore,
-                    breadcrumbs: true,
-                    permission: 'templates:marketplace,templates:custom'
-                }] : []),
+                ...(showMarketplaces
+                    ? [
+                          {
+                              id: 'marketplaces',
+                              title: 'Marketplaces',
+                              type: 'item',
+                              url: '/marketplaces',
+                              icon: icons.IconBuildingStore,
+                              breadcrumbs: true,
+                              permission: 'templates:marketplace,templates:custom'
+                          }
+                      ]
+                    : []),
                 {
                     id: 'tools',
                     title: 'Tools',
@@ -330,6 +334,14 @@ const dashboard = {
                     type: 'item',
                     url: '/log-viewer',
                     icon: icons.IconSearch,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'crm-leads',
+                    title: 'CRM Leads',
+                    type: 'item',
+                    url: '/crm-leads',
+                    icon: icons.IconUsers,
                     breadcrumbs: true
                 }
             ]
