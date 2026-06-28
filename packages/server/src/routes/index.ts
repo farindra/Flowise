@@ -28,6 +28,7 @@ import loadPromptRouter from './load-prompts'
 import logsRouter from './log'
 import logSearchRouter from './log-search'
 import crmRouter from './crm'
+import iotRouter from './iot'
 import marketplacesRouter from './marketplaces'
 import mcpEndpointRouter from './mcp-endpoint'
 import mcpServerRouter from './mcp-server'
@@ -151,6 +152,7 @@ router.use('/loginmethod', loginMethodRouter)
 router.use('/logs', IdentityManager.checkFeatureByPlan('feat:logs'), logsRouter)
 router.use('/log-search', logSearchRouter)
 router.use('/crm', crmRouter)
+router.use('/iot', iotRouter)
 // router.use('/files', IdentityManager.checkFeatureByPlan('feat:files'), filesRouter)
 
 router.use('/wa-session', waSessionRouter)

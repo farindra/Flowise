@@ -48,6 +48,7 @@ export const WHITELIST_URLS = [
     '/api/v1/faq/',
     '/api/v1/log-search/',
     '/api/v1/crm/',
+    '/api/v1/iot/',
     AzureSSO.LOGIN_URI,
     AzureSSO.LOGOUT_URI,
     AzureSSO.CALLBACK_URI,

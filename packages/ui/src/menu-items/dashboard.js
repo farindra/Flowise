@@ -27,7 +27,8 @@ import {
     IconBrandWhatsapp,
     IconHelp,
     IconSearch,
-    IconBrandTelegram
+    IconBrandTelegram,
+    IconDeviceDesktopAnalytics
 } from '@tabler/icons-react'
 
 // constant
@@ -59,7 +60,8 @@ const icons = {
     IconBrandWhatsapp,
     IconHelp,
     IconSearch,
-    IconBrandTelegram
+    IconBrandTelegram,
+    IconDeviceDesktopAnalytics
 }
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
@@ -342,6 +344,14 @@ const dashboard = {
                     type: 'item',
                     url: '/crm-leads',
                     icon: icons.IconUsers,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'iot-monitor',
+                    title: 'IoT Monitor',
+                    type: 'item',
+                    url: '/iot-monitor',
+                    icon: icons.IconDeviceDesktopAnalytics,
                     breadcrumbs: true
                 }
             ]
