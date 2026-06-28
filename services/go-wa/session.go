@@ -17,6 +17,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
@@ -245,6 +246,24 @@ func (s *WASession) handleEvent(rawEvt interface{}) {
 			s.Connect(context.Background())
 		}()
 	}
+}
+
+func (s *WASession) SendMessage(ctx context.Context, phone, text string) error {
+	phone = strings.TrimPrefix(phone, "+")
+	if strings.HasPrefix(phone, "0") {
+		phone = "62" + phone[1:]
+	}
+	jid, err := parseJID(phone)
+	if err != nil {
+		return fmt.Errorf("invalid phone: %w", err)
+	}
+	msg := &waE2E.Message{Conversation: proto.String(mdToWA(text))}
+	_, err = s.waClient.SendMessage(ctx, jid, msg)
+	return err
+}
+
+func parseJID(phone string) (types.JID, error) {
+	return types.ParseJID(phone + "@s.whatsapp.net")
 }
 
 func (s *WASession) handleMessage(evt *events.Message) {

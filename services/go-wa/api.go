@@ -212,6 +212,35 @@ func handleSessionLogout(mgr *SessionManager) http.HandlerFunc {
 	}
 }
 
+// POST /api/sessions/{id}/send
+func handleSessionSend(mgr *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		s := mgr.Get(id)
+		if s == nil {
+			jsonErr(w, 404, "session not found")
+			return
+		}
+		var body struct {
+			Phone   string `json:"phone"`
+			Message string `json:"message"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, 400, "invalid JSON")
+			return
+		}
+		if body.Phone == "" || body.Message == "" {
+			jsonErr(w, 400, "phone and message are required")
+			return
+		}
+		if err := s.SendMessage(r.Context(), body.Phone, body.Message); err != nil {
+			jsonErr(w, 500, err.Error())
+			return
+		}
+		jsonOK(w, map[string]string{"status": "sent"})
+	}
+}
+
 // POST /api/sessions/{id}/pair-phone
 func handleSessionPairPhone(mgr *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
