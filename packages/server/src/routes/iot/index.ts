@@ -39,5 +39,9 @@ router.post('/readings', (req, res) => {
     const body = JSON.stringify(req.body)
     proxy('/api/readings', 'POST', req, res, body)
 })
+router.post('/zones/:id/report', (req, res) => {
+    const body = JSON.stringify(req.body)
+    proxy(`/api/zones/${req.params.id}/report`, 'POST', req, res, body)
+})
 
 export default router

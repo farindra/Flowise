@@ -34,6 +34,7 @@ func main() {
 	mux.HandleFunc("GET /api/readings/history", apiAuth(internalKey, handleReadingsHistory))
 	mux.HandleFunc("GET /api/alerts", apiAuth(internalKey, handleListAlerts))
 	mux.HandleFunc("PUT /api/alerts/{id}/resolve", apiAuth(internalKey, handleResolveAlert))
+	mux.HandleFunc("POST /api/zones/{id}/report", apiAuth(internalKey, handleSendReport))
 
 	log.Printf("go-iot listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {

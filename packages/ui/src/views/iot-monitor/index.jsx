@@ -8,7 +8,12 @@ import {
     Divider,
     Grid,
     IconButton,
+    ListItemIcon,
+    ListItemText,
+    Menu,
+    MenuItem,
     Paper,
+    Snackbar,
     Stack,
     Table,
     TableBody,
@@ -18,7 +23,17 @@ import {
     TableRow,
     Typography
 } from '@mui/material'
-import { IconRefresh, IconAlertTriangle, IconCheck, IconDroplet, IconTemperature, IconWind } from '@tabler/icons-react'
+import {
+    IconRefresh,
+    IconAlertTriangle,
+    IconCheck,
+    IconDroplet,
+    IconTemperature,
+    IconWind,
+    IconDotsVertical,
+    IconBrandTelegram,
+    IconMail
+} from '@tabler/icons-react'
 import MainCard from '@/ui-component/cards/MainCard'
 
 const API = '/api/v1/iot'
@@ -60,48 +75,110 @@ function ReadingBadge({ sensorType, reading }) {
 
 ReadingBadge.propTypes = { sensorType: PropTypes.string, reading: PropTypes.object }
 
-function ZoneCard({ zone, onRefresh }) {
+function ZoneCard({ zone }) {
+    const [anchorEl, setAnchorEl] = useState(null)
+    const [sending, setSending] = useState(null) // 'telegram'|'email'|null
+    const [snack, setSnack] = useState(null)
+
     const statusColor = zone.status === 'alert' ? 'error' : zone.status === 'warning' ? 'warning' : 'success'
     const statusLabel = zone.status === 'alert' ? 'ALERT' : zone.status === 'warning' ? 'Warning' : 'Normal'
 
+    const sendReport = async (channel) => {
+        setAnchorEl(null)
+        setSending(channel)
+        try {
+            const res = await fetch(`${API}/zones/${zone.id}/report`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channels: [channel] })
+            })
+            const d = await res.json()
+            const result = d.results?.[channel]
+            if (result === 'sent')
+                setSnack({ severity: 'success', msg: `Laporan terkirim ke ${channel === 'telegram' ? 'Telegram' : 'Email'}` })
+            else if (result === 'not_configured') setSnack({ severity: 'warning', msg: 'Email belum dikonfigurasi di server' })
+            else setSnack({ severity: 'error', msg: result || 'Gagal mengirim laporan' })
+        } catch (e) {
+            setSnack({ severity: 'error', msg: e.message })
+        } finally {
+            setSending(null)
+        }
+    }
+
     return (
-        <Paper
-            variant='outlined'
-            sx={{
-                p: 2,
-                borderColor: zone.status === 'alert' ? 'error.main' : zone.status === 'warning' ? 'warning.main' : 'divider',
-                borderWidth: zone.status === 'alert' ? 2 : 1
-            }}
-        >
-            <Stack direction='row' justifyContent='space-between' alignItems='flex-start' sx={{ mb: 1 }}>
-                <Box>
-                    <Typography variant='subtitle2' sx={{ fontWeight: 600 }}>
-                        {zone.name}
-                    </Typography>
-                    <Typography variant='caption' color='text.secondary'>
-                        {zone.description}
-                    </Typography>
-                </Box>
-                <Chip size='small' label={statusLabel} color={statusColor} />
-            </Stack>
+        <>
+            <Paper
+                variant='outlined'
+                sx={{
+                    p: 2,
+                    borderColor: zone.status === 'alert' ? 'error.main' : zone.status === 'warning' ? 'warning.main' : 'divider',
+                    borderWidth: zone.status === 'alert' ? 2 : 1
+                }}
+            >
+                <Stack direction='row' justifyContent='space-between' alignItems='flex-start' sx={{ mb: 1 }}>
+                    <Box sx={{ flex: 1 }}>
+                        <Typography variant='subtitle2' sx={{ fontWeight: 600 }}>
+                            {zone.name}
+                        </Typography>
+                        <Typography variant='caption' color='text.secondary'>
+                            {zone.description}
+                        </Typography>
+                    </Box>
+                    <Stack direction='row' spacing={0.5} alignItems='center'>
+                        <Chip size='small' label={statusLabel} color={statusColor} />
+                        <IconButton size='small' onClick={(e) => setAnchorEl(e.currentTarget)}>
+                            {sending ? <CircularProgress size={14} /> : <IconDotsVertical size={16} />}
+                        </IconButton>
+                    </Stack>
+                </Stack>
 
-            <Stack spacing={0.5}>
-                {['soil_humidity', 'air_humidity', 'temperature'].map((type) => (
-                    <ReadingBadge key={type} sensorType={type} reading={zone.latest?.[type]} />
-                ))}
-                {zone.latest?.motion && <ReadingBadge sensorType='motion' reading={zone.latest.motion} />}
-            </Stack>
+                <Stack spacing={0.5}>
+                    {['soil_humidity', 'air_humidity', 'temperature'].map((type) => (
+                        <ReadingBadge key={type} sensorType={type} reading={zone.latest?.[type]} />
+                    ))}
+                    {zone.latest?.motion && <ReadingBadge sensorType='motion' reading={zone.latest.motion} />}
+                </Stack>
 
-            {zone.open_alerts > 0 && (
-                <Box sx={{ mt: 1 }}>
-                    <Chip size='small' label={`${zone.open_alerts} alert aktif`} color='error' variant='outlined' />
-                </Box>
-            )}
-        </Paper>
+                {zone.open_alerts > 0 && (
+                    <Box sx={{ mt: 1 }}>
+                        <Chip size='small' label={`${zone.open_alerts} alert aktif`} color='error' variant='outlined' />
+                    </Box>
+                )}
+            </Paper>
+
+            <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={() => setAnchorEl(null)}>
+                <MenuItem dense disabled sx={{ fontSize: 11, opacity: '1 !important', color: 'text.disabled' }}>
+                    Kirim Laporan
+                </MenuItem>
+                <MenuItem dense onClick={() => sendReport('telegram')}>
+                    <ListItemIcon>
+                        <IconBrandTelegram size={16} color='#2AABEE' />
+                    </ListItemIcon>
+                    <ListItemText primary='Telegram' primaryTypographyProps={{ variant: 'body2' }} />
+                </MenuItem>
+                <MenuItem dense onClick={() => sendReport('email')} disabled>
+                    <ListItemIcon>
+                        <IconMail size={16} />
+                    </ListItemIcon>
+                    <ListItemText primary='Email (belum aktif)' primaryTypographyProps={{ variant: 'body2' }} />
+                </MenuItem>
+            </Menu>
+
+            <Snackbar
+                open={Boolean(snack)}
+                autoHideDuration={4000}
+                onClose={() => setSnack(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+                <Alert onClose={() => setSnack(null)} severity={snack?.severity || 'info'} sx={{ width: '100%' }}>
+                    {snack?.msg}
+                </Alert>
+            </Snackbar>
+        </>
     )
 }
 
-ZoneCard.propTypes = { zone: PropTypes.object, onRefresh: PropTypes.func }
+ZoneCard.propTypes = { zone: PropTypes.object }
 
 function AlertRow({ alert, onResolve }) {
     const [resolving, setResolving] = useState(false)

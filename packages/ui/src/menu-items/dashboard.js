@@ -326,6 +326,21 @@ const dashboard = {
             ]
         },
         {
+            id: 'crm',
+            title: 'CRM',
+            type: 'group',
+            children: [
+                {
+                    id: 'crm-leads',
+                    title: 'CRM Leads',
+                    type: 'item',
+                    url: '/crm-leads',
+                    icon: icons.IconUsers,
+                    breadcrumbs: true
+                }
+            ]
+        },
+        {
             id: 'maintenance',
             title: 'Maintenance',
             type: 'group',
@@ -336,14 +351,6 @@ const dashboard = {
                     type: 'item',
                     url: '/log-viewer',
                     icon: icons.IconSearch,
-                    breadcrumbs: true
-                },
-                {
-                    id: 'crm-leads',
-                    title: 'CRM Leads',
-                    type: 'item',
-                    url: '/crm-leads',
-                    icon: icons.IconUsers,
                     breadcrumbs: true
                 },
                 {
