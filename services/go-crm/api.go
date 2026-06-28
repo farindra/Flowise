@@ -3,9 +3,49 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// round-robin salesman counter (in-memory, resets on restart — intentional)
+var salesmanIdx atomic.Uint64
+
+func salesmanList() []string {
+	raw := os.Getenv("SALESMEN")
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func nextSalesman() string {
+	list := salesmanList()
+	if len(list) == 0 {
+		return ""
+	}
+	idx := salesmanIdx.Add(1) - 1
+	return list[int(idx)%len(list)]
+}
+
+func scoreFromUrgency(urgency string) int {
+	switch urgency {
+	case "high":
+		return 80
+	case "medium":
+		return 50
+	default:
+		return 20
+	}
+}
 
 func apiAuth(key string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -72,37 +112,60 @@ func handleCreateLead(w http.ResponseWriter, r *http.Request) {
 	if body.Source == "" {
 		body.Source = "wa"
 	}
+	// auto-score berdasarkan urgensi
+	if body.Score == 0 {
+		body.Score = scoreFromUrgency(body.Urgency)
+	}
+	// round-robin assign salesman
+	if body.AssignedTo == "" {
+		body.AssignedTo = nextSalesman()
+	}
+
 	id, err := dbCreateLead(r.Context(), &body)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Auto-schedule follow-up notifications D+1, D+3, D+7
+	// Drip campaign: D+1 kenalan, D+3 testimoni, D+5 perbandingan kavling, D+7 konsultasi gratis
 	name := body.Name
 	if name == "" {
 		name = "Bapak/Ibu"
 	}
-	templates := []struct {
+	drip := []struct {
 		days int
+		typ  string
 		msg  string
 	}{
-		{1, "Assalamu'alaikum " + name + ", terima kasih sudah menghubungi Al Azhar Memorial Garden. Ada pertanyaan mengenai kavling yang bisa kami bantu? Konsultan kami siap di WA: 085 888 555 200. Jazakallahu Khayran."},
-		{3, "Assalamu'alaikum " + name + ", kami dari Al Azhar Memorial Garden kembali menyapa. Apakah Bapak/Ibu sudah sempat mempertimbangkan pilihan kavling? Kami bisa jadwalkan kunjungan ke lahan Karawang. Hubungi kami di 085 888 555 200."},
-		{7, "Assalamu'alaikum " + name + ", semoga Bapak/Ibu dan keluarga sehat selalu. Al Azhar Memorial Garden — pemakaman muslim terpercaya — siap melayani kapan pun dibutuhkan. Info: 085 888 555 200. Jazakallahu Khayran."},
+		{1, "drip_d1", "Assalamu'alaikum " + name + " 🌿\n\nTerima kasih sudah menghubungi *Al Azhar Memorial Garden (AAMG)* — pemakaman Muslim No.1 di Indonesia.\n\nAAMG berdiri di atas lahan 80 hektar di Karawang, dilengkapi:\n✅ Arah kiblat bersertifikat Kemenag RI\n✅ Ustaz dan petugas 24 jam\n✅ ISO 9001 manajemen pemakaman\n✅ Akses tol Karawang Barat hanya 5 menit\n\nBila ada pertanyaan, konsultan kami siap membantu di 085 888 555 200.\n\nJazakallahu Khayran 🤲"},
+		{3, "drip_d3", "Assalamu'alaikum " + name + " 🌿\n\nKetenangan pikiran tidak ternilai harganya.\n\nKeluarga yang telah memiliki kavling di AAMG menceritakan: _\"Alhamdulillah, saat musibah datang kami tidak perlu bingung mencari tempat. Semua sudah disiapkan.\"_\n\n📍 Pilihan kavling kami:\n• *Keluarga* — 2 liang, cocok untuk pasangan\n• *Premium* — 4 liang + taman\n• *VIP Garden* — lokasi pilihan, view terbaik\n\nIngin tahu lebih lanjut? Balas pesan ini atau hubungi 085 888 555 200 🙏"},
+		{5, "drip_d5", "Assalamu'alaikum " + name + " 🌿\n\nBerikut perbandingan tipe kavling AAMG yang sering ditanyakan:\n\n| Tipe | Liang | Luas | Harga mulai |\n|------|-------|------|-------------|\n| Standar | 1 | 1×2m | Rp 25 jt |\n| Keluarga | 2 | 2×2m | Rp 45 jt |\n| Premium | 4 | 3×3m | Rp 85 jt |\n| VIP Garden | 4+ | 4×4m | Rp 150 jt |\n\n💡 Harga kavling cenderung naik setiap tahun — semakin cepat memiliki, semakin hemat.\n\nPerlu simulasi cicilan? Hubungi kami di 085 888 555 200 📞"},
+		{7, "drip_d7", "Assalamu'alaikum " + name + " 🌿\n\nIni adalah pesan terakhir dari seri perkenalan kami. Kami harap informasi yang dibagikan bermanfaat.\n\n🎁 *Penawaran Khusus:* Konsultasi GRATIS dengan konsultan AAMG — kami bisa visit ke rumah Bapak/Ibu atau kunjungi langsung lahan kami di Karawang.\n\n📞 Hubungi: 085 888 555 200\n🌐 Atau balas pesan ini kapan saja\n\n_\"Dan siapkanlah untuk menghadapi-Nya\"_ — semoga Allah memudahkan setiap urusan kita. Aamiin 🤲\n\n*Tim AAMG*"},
 	}
 	leadID := id
-	for _, t := range templates {
+	for _, t := range drip {
 		notif := &Notification{
 			LeadID:         &leadID,
 			Channel:        "wa",
-			Type:           "lead_followup",
+			Type:           t.typ,
 			RecipientPhone: body.Phone,
 			Message:        t.msg,
 			ScheduledAt:    time.Now().UTC().AddDate(0, 0, t.days),
 		}
 		_, _ = dbCreateNotif(r.Context(), notif)
 	}
+
+	// Retargeting D+30 untuk lead yang belum respons
+	retargetMsg := "Assalamu'alaikum " + name + " 🌿\n\nSudah sebulan berlalu sejak kami pertama berkenalan. Kami mendoakan Bapak/Ibu dan keluarga selalu dalam lindungan Allah SWT.\n\nJika suatu saat membutuhkan informasi mengenai *kavling pemakaman Muslim*, kami selalu siap membantu — tanpa tekanan.\n\n📞 *Al Azhar Memorial Garden*: 085 888 555 200\n\nJazakallahu Khayran 🤲"
+	retarget := &Notification{
+		LeadID:         &leadID,
+		Channel:        "wa",
+		Type:           "retargeting",
+		RecipientPhone: body.Phone,
+		Message:        retargetMsg,
+		ScheduledAt:    time.Now().UTC().AddDate(0, 0, 30),
+	}
+	_, _ = dbCreateNotif(r.Context(), retarget)
 
 	w.WriteHeader(http.StatusCreated)
 	jsonOK(w, map[string]string{"id": id})
@@ -310,24 +373,57 @@ func handleMarkNotifSent(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"status": "sent"})
 }
 
+// handleUnrespondedLeads — leads masih di stage "new" lebih dari N hari (default 7)
+func handleUnrespondedLeads(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	leads, err := dbListLeads(r.Context(), "new")
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	var stale []Lead
+	for _, l := range leads {
+		if l.CreatedAt.Before(cutoff) {
+			stale = append(stale, l)
+		}
+	}
+	if stale == nil {
+		stale = []Lead{}
+	}
+	jsonOK(w, stale)
+}
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var totalLeads, newLeads, hotLeads, totalBuyers, availableKavlings, pendingNotifs int
+	var totalLeads, hotLeads, totalBuyers, availableKavlings, pendingNotifs int
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads`).Scan(&totalLeads)
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads WHERE stage='new'`).Scan(&newLeads)
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads WHERE urgency='high' AND stage NOT IN ('closed','lost')`).Scan(&hotLeads)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads WHERE urgency='high' AND stage NOT IN ('won','lost')`).Scan(&hotLeads)
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_buyers`).Scan(&totalBuyers)
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_kavlings WHERE status='available'`).Scan(&availableKavlings)
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_notifications WHERE status='pending' AND scheduled_at <= NOW()`).Scan(&pendingNotifs)
 
-	jsonOK(w, map[string]int{
+	// per-stage breakdown
+	rows, _ := pool.Query(ctx, `SELECT stage, COUNT(*) FROM crm_leads GROUP BY stage`)
+	byStage := map[string]int{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var stage string
+			var cnt int
+			rows.Scan(&stage, &cnt)
+			byStage[stage] = cnt
+		}
+	}
+
+	jsonOK(w, map[string]any{
 		"total_leads":        totalLeads,
-		"new_leads":          newLeads,
 		"hot_leads":          hotLeads,
 		"total_buyers":       totalBuyers,
 		"available_kavlings": availableKavlings,
 		"pending_notifs":     pendingNotifs,
+		"by_stage":           byStage,
 	})
 }

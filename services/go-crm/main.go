@@ -50,6 +50,9 @@ func main() {
 	mux.HandleFunc("POST /api/notifications", apiAuth(internalKey, handleCreateNotif))
 	mux.HandleFunc("PUT /api/notifications/{id}/sent", apiAuth(internalKey, handleMarkNotifSent))
 
+	// Lead nurturing
+	mux.HandleFunc("GET /api/leads/unresponded", apiAuth(internalKey, handleUnrespondedLeads))
+
 	// Stats for dashboard
 	mux.HandleFunc("GET /api/stats", apiAuth(internalKey, handleStats))
 

@@ -66,6 +66,21 @@ async function markSent(notifId) {
     })
 }
 
+async function getLead(leadId) {
+    try {
+        const res = await request({
+            hostname: '127.0.0.1',
+            port: 8083,
+            path: `/api/leads/${leadId}`,
+            method: 'GET',
+            headers: { 'X-Internal-Key': CRM_KEY }
+        })
+        return res.status === 200 ? res.data : null
+    } catch {
+        return null
+    }
+}
+
 async function dispatch() {
     let res
     try {
@@ -93,6 +108,16 @@ async function dispatch() {
 
     for (const n of notifs) {
         try {
+            // Retargeting: skip jika lead sudah respons (stage bukan 'new')
+            if (n.type === 'retargeting' && n.lead_id) {
+                const lead = await getLead(n.lead_id)
+                if (lead && lead.stage !== 'new') {
+                    process.stdout.write(`[notif-dispatcher] Skip retargeting — lead ${n.lead_id} sudah di stage=${lead.stage}\n`)
+                    await markSent(n.id)
+                    continue
+                }
+            }
+
             if (n.channel === 'wa' && sessionId) {
                 const r = await sendWA(sessionId, n.recipient_phone, n.message)
                 if (r.status < 300) {
@@ -102,7 +127,6 @@ async function dispatch() {
                     process.stderr.write(`[notif-dispatcher] WA send failed ${r.status}: ${JSON.stringify(r.data)}\n`)
                 }
             } else if (n.channel !== 'wa') {
-                // channel lain belum diimplementasi — skip tapi tetap mark sent
                 process.stdout.write(`[notif-dispatcher] Skip channel=${n.channel} id=${n.id}\n`)
                 await markSent(n.id)
             }
