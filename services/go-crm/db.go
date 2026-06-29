@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -106,11 +107,56 @@ func migrateDB(ctx context.Context) error {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
+		CREATE TABLE IF NOT EXISTS crm_salesmen (
+			id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			name             TEXT        NOT NULL,
+			phone            TEXT        NOT NULL DEFAULT '',
+			telegram_id      TEXT        NOT NULL DEFAULT '',
+			telegram_chat_id TEXT        NOT NULL DEFAULT '',
+			email            TEXT        NOT NULL DEFAULT '',
+			area             TEXT        NOT NULL DEFAULT '',
+			commission_type  TEXT        NOT NULL DEFAULT 'percentage',
+			commission_rate  NUMERIC     NOT NULL DEFAULT 0,
+			target_monthly   INT         NOT NULL DEFAULT 10,
+			status           TEXT        NOT NULL DEFAULT 'active',
+			notes            TEXT        NOT NULL DEFAULT '',
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_leads_stage ON crm_leads(stage);
 		CREATE INDEX IF NOT EXISTS idx_leads_phone ON crm_leads(phone);
 		CREATE INDEX IF NOT EXISTS idx_kavlings_status ON crm_kavlings(status);
 		CREATE INDEX IF NOT EXISTS idx_notifs_pending ON crm_notifications(status, scheduled_at)
 			WHERE status = 'pending';
+		CREATE INDEX IF NOT EXISTS idx_salesmen_status ON crm_salesmen(status);
+
+		CREATE TABLE IF NOT EXISTS crm_campaigns (
+			id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			name          TEXT        NOT NULL,
+			slug          TEXT        NOT NULL UNIQUE,
+			description   TEXT        NOT NULL DEFAULT '',
+			product_ids   TEXT[]      NOT NULL DEFAULT '{}',
+			pixels        JSONB       NOT NULL DEFAULT '[]',
+			form_note     TEXT        NOT NULL DEFAULT '',
+			custom_script TEXT        NOT NULL DEFAULT '',
+			custom_html   TEXT        NOT NULL DEFAULT '',
+			redirect_type TEXT        NOT NULL DEFAULT 'wa',
+			redirect_url  TEXT        NOT NULL DEFAULT '',
+			status        TEXT        NOT NULL DEFAULT 'active',
+			leads_count   INT         NOT NULL DEFAULT 0,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		ALTER TABLE crm_campaigns ADD COLUMN IF NOT EXISTS custom_script TEXT NOT NULL DEFAULT '';
+		ALTER TABLE crm_campaigns ADD COLUMN IF NOT EXISTS custom_html TEXT NOT NULL DEFAULT '';
+		ALTER TABLE crm_campaigns ADD COLUMN IF NOT EXISTS redirect_type TEXT NOT NULL DEFAULT 'wa';
+		ALTER TABLE crm_campaigns ADD COLUMN IF NOT EXISTS redirect_url TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_campaigns_slug   ON crm_campaigns(slug);
+		CREATE INDEX IF NOT EXISTS idx_campaigns_status ON crm_campaigns(status);
+
+		ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS campaign_id TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_leads_campaign ON crm_leads(campaign_id);
 	`)
 	return err
 }
@@ -130,6 +176,7 @@ type Lead struct {
 	Interest      string     `json:"interest"`
 	Notes         string     `json:"notes"`
 	AssignedTo    string     `json:"assigned_to"`
+	CampaignID    string     `json:"campaign_id"`
 	LastContactAt *time.Time `json:"last_contact_at"`
 	FollowUpAt    *time.Time `json:"follow_up_at"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -138,7 +185,7 @@ type Lead struct {
 
 func dbListLeads(ctx context.Context, stage string) ([]Lead, error) {
 	query := `SELECT id, name, phone, email, source, stage, score, urgency,
-		budget_range, interest, notes, assigned_to,
+		budget_range, interest, notes, assigned_to, campaign_id,
 		last_contact_at, follow_up_at, created_at, updated_at
 		FROM crm_leads`
 	args := []any{}
@@ -157,7 +204,8 @@ func dbListLeads(ctx context.Context, stage string) ([]Lead, error) {
 		var r Lead
 		if err := rows.Scan(&r.ID, &r.Name, &r.Phone, &r.Email, &r.Source,
 			&r.Stage, &r.Score, &r.Urgency, &r.BudgetRange, &r.Interest,
-			&r.Notes, &r.AssignedTo, &r.LastContactAt, &r.FollowUpAt,
+			&r.Notes, &r.AssignedTo, &r.CampaignID,
+			&r.LastContactAt, &r.FollowUpAt,
 			&r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -169,11 +217,11 @@ func dbListLeads(ctx context.Context, stage string) ([]Lead, error) {
 func dbGetLead(ctx context.Context, id string) (*Lead, error) {
 	r := &Lead{}
 	err := pool.QueryRow(ctx, `SELECT id, name, phone, email, source, stage, score, urgency,
-		budget_range, interest, notes, assigned_to,
+		budget_range, interest, notes, assigned_to, campaign_id,
 		last_contact_at, follow_up_at, created_at, updated_at
 		FROM crm_leads WHERE id = $1`, id).Scan(
 		&r.ID, &r.Name, &r.Phone, &r.Email, &r.Source, &r.Stage, &r.Score,
-		&r.Urgency, &r.BudgetRange, &r.Interest, &r.Notes, &r.AssignedTo,
+		&r.Urgency, &r.BudgetRange, &r.Interest, &r.Notes, &r.AssignedTo, &r.CampaignID,
 		&r.LastContactAt, &r.FollowUpAt, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -184,10 +232,10 @@ func dbGetLead(ctx context.Context, id string) (*Lead, error) {
 func dbCreateLead(ctx context.Context, r *Lead) (string, error) {
 	var id string
 	err := pool.QueryRow(ctx, `INSERT INTO crm_leads
-		(name, phone, email, source, stage, score, urgency, budget_range, interest, notes, assigned_to)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		(name, phone, email, source, stage, score, urgency, budget_range, interest, notes, assigned_to, campaign_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
 		r.Name, r.Phone, r.Email, r.Source, r.Stage, r.Score, r.Urgency,
-		r.BudgetRange, r.Interest, r.Notes, r.AssignedTo).Scan(&id)
+		r.BudgetRange, r.Interest, r.Notes, r.AssignedTo, r.CampaignID).Scan(&id)
 	return id, err
 }
 
@@ -385,4 +433,241 @@ func dbCreateNotif(ctx context.Context, r *Notification) (string, error) {
 func dbMarkNotifSent(ctx context.Context, id string) error {
 	_, err := pool.Exec(ctx, `UPDATE crm_notifications SET status='sent', sent_at=NOW() WHERE id=$1`, id)
 	return err
+}
+
+// ── Salesmen ──────────────────────────────────────────────────────────────────
+
+type Salesman struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Phone          string    `json:"phone"`
+	TelegramID     string    `json:"telegram_id"`
+	TelegramChatID string    `json:"telegram_chat_id"`
+	Email          string    `json:"email"`
+	Area           string    `json:"area"`
+	CommissionType string    `json:"commission_type"`
+	CommissionRate float64   `json:"commission_rate"`
+	TargetMonthly  int       `json:"target_monthly"`
+	Status         string    `json:"status"`
+	Notes          string    `json:"notes"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	// Computed stats (not stored)
+	LeadsThisMonth  int     `json:"leads_this_month,omitempty"`
+	LeadsTotal      int     `json:"leads_total,omitempty"`
+	LeadsWon        int     `json:"leads_won,omitempty"`
+	ConversionRate  float64 `json:"conversion_rate,omitempty"`
+	EstCommission   float64 `json:"est_commission,omitempty"`
+}
+
+var salesmanScanCols = `id, name, phone, telegram_id, telegram_chat_id, email, area,
+	commission_type, commission_rate, target_monthly, status, notes, created_at, updated_at`
+
+func scanSalesman(rows interface{ Scan(...any) error }) (*Salesman, error) {
+	s := &Salesman{}
+	err := rows.Scan(&s.ID, &s.Name, &s.Phone, &s.TelegramID, &s.TelegramChatID,
+		&s.Email, &s.Area, &s.CommissionType, &s.CommissionRate,
+		&s.TargetMonthly, &s.Status, &s.Notes, &s.CreatedAt, &s.UpdatedAt)
+	return s, err
+}
+
+func dbListSalesmen(ctx context.Context) ([]Salesman, error) {
+	rows, err := pool.Query(ctx, `SELECT `+salesmanScanCols+` FROM crm_salesmen ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Salesman
+	for rows.Next() {
+		s, err := scanSalesman(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
+func dbGetSalesman(ctx context.Context, id string) (*Salesman, error) {
+	row := pool.QueryRow(ctx, `SELECT `+salesmanScanCols+` FROM crm_salesmen WHERE id=$1`, id)
+	return scanSalesman(row)
+}
+
+func dbCreateSalesman(ctx context.Context, s *Salesman) (string, error) {
+	var id string
+	err := pool.QueryRow(ctx, `
+		INSERT INTO crm_salesmen (name, phone, telegram_id, telegram_chat_id, email, area,
+			commission_type, commission_rate, target_monthly, status, notes)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		s.Name, s.Phone, s.TelegramID, s.TelegramChatID, s.Email, s.Area,
+		s.CommissionType, s.CommissionRate, s.TargetMonthly, s.Status, s.Notes,
+	).Scan(&id)
+	return id, err
+}
+
+func dbUpdateSalesman(ctx context.Context, s *Salesman) error {
+	_, err := pool.Exec(ctx, `
+		UPDATE crm_salesmen SET name=$1, phone=$2, telegram_id=$3, telegram_chat_id=$4,
+			email=$5, area=$6, commission_type=$7, commission_rate=$8,
+			target_monthly=$9, status=$10, notes=$11, updated_at=NOW()
+		WHERE id=$12`,
+		s.Name, s.Phone, s.TelegramID, s.TelegramChatID, s.Email, s.Area,
+		s.CommissionType, s.CommissionRate, s.TargetMonthly, s.Status, s.Notes, s.ID,
+	)
+	return err
+}
+
+func dbDeleteSalesman(ctx context.Context, id string) error {
+	_, err := pool.Exec(ctx, `DELETE FROM crm_salesmen WHERE id=$1`, id)
+	return err
+}
+
+// dbPickSalesman — pilih salesman aktif dengan leads PALING SEDIKIT bulan ini
+func dbPickSalesman(ctx context.Context) (*Salesman, error) {
+	row := pool.QueryRow(ctx, `
+		SELECT s.id, s.name, s.phone, s.telegram_id, s.telegram_chat_id, s.email, s.area,
+			s.commission_type, s.commission_rate, s.target_monthly, s.status, s.notes,
+			s.created_at, s.updated_at
+		FROM crm_salesmen s
+		LEFT JOIN crm_leads l ON l.assigned_to = s.name
+			AND date_trunc('month', l.created_at) = date_trunc('month', NOW())
+		WHERE s.status = 'active'
+		GROUP BY s.id
+		ORDER BY COUNT(l.id) ASC, s.created_at ASC
+		LIMIT 1`)
+	return scanSalesman(row)
+}
+
+func dbSalesmanStats(ctx context.Context, id string) (leadsMonth, leadsTotal, leadsWon int) {
+	s := &Salesman{}
+	if err := pool.QueryRow(ctx, `SELECT name FROM crm_salesmen WHERE id=$1`, id).Scan(&s.Name); err != nil {
+		return
+	}
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads WHERE assigned_to=$1
+		AND date_trunc('month',created_at)=date_trunc('month',NOW())`, s.Name).Scan(&leadsMonth)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads WHERE assigned_to=$1`, s.Name).Scan(&leadsTotal)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_leads WHERE assigned_to=$1 AND stage='won'`, s.Name).Scan(&leadsWon)
+	return
+}
+
+// ── Campaigns ─────────────────────────────────────────────────────────────────
+
+type Pixel struct {
+	Type string `json:"type"` // fb_pixel | gtm | tiktok_pixel | ga4
+	ID   string `json:"id"`
+}
+
+type Campaign struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Slug         string    `json:"slug"`
+	Description  string    `json:"description"`
+	ProductIDs   []string  `json:"product_ids"`
+	Pixels       []Pixel   `json:"pixels"`
+	FormNote     string    `json:"form_note"`
+	CustomScript string    `json:"custom_script"`
+	CustomHTML   string    `json:"custom_html"`
+	RedirectType string    `json:"redirect_type"` // wa | website | custom_link
+	RedirectURL  string    `json:"redirect_url"`
+	Status       string    `json:"status"`
+	LeadsCount   int       `json:"leads_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func scanCampaign(row interface{ Scan(...any) error }) (*Campaign, error) {
+	c := &Campaign{}
+	var pixelsJSON []byte
+	var productIDs []string
+	err := row.Scan(&c.ID, &c.Name, &c.Slug, &c.Description, &productIDs,
+		&pixelsJSON, &c.FormNote, &c.CustomScript, &c.CustomHTML,
+		&c.RedirectType, &c.RedirectURL, &c.Status, &c.LeadsCount, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	c.ProductIDs = productIDs
+	if len(pixelsJSON) > 0 {
+		json.Unmarshal(pixelsJSON, &c.Pixels)
+	}
+	if c.Pixels == nil {
+		c.Pixels = []Pixel{}
+	}
+	if c.ProductIDs == nil {
+		c.ProductIDs = []string{}
+	}
+	return c, nil
+}
+
+func dbListCampaigns(ctx context.Context) ([]Campaign, error) {
+	rows, err := pool.Query(ctx, `SELECT id, name, slug, description, product_ids,
+		pixels, form_note, custom_script, custom_html, redirect_type, redirect_url, status, leads_count, created_at, updated_at
+		FROM crm_campaigns ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Campaign
+	for rows.Next() {
+		c, err := scanCampaign(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+func dbGetCampaign(ctx context.Context, id string) (*Campaign, error) {
+	return scanCampaign(pool.QueryRow(ctx, `SELECT id, name, slug, description, product_ids,
+		pixels, form_note, custom_script, custom_html, redirect_type, redirect_url, status, leads_count, created_at, updated_at
+		FROM crm_campaigns WHERE id=$1`, id))
+}
+
+func dbGetCampaignBySlug(ctx context.Context, slug string) (*Campaign, error) {
+	return scanCampaign(pool.QueryRow(ctx, `SELECT id, name, slug, description, product_ids,
+		pixels, form_note, custom_script, custom_html, redirect_type, redirect_url, status, leads_count, created_at, updated_at
+		FROM crm_campaigns WHERE slug=$1 AND status='active'`, slug))
+}
+
+func dbCreateCampaign(ctx context.Context, c *Campaign) (string, error) {
+	pixelsJSON, _ := json.Marshal(c.Pixels)
+	var id string
+	err := pool.QueryRow(ctx, `INSERT INTO crm_campaigns
+		(name, slug, description, product_ids, pixels, form_note, custom_script, custom_html, redirect_type, redirect_url, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		c.Name, c.Slug, c.Description, c.ProductIDs, pixelsJSON, c.FormNote,
+		c.CustomScript, c.CustomHTML, c.RedirectType, c.RedirectURL, c.Status,
+	).Scan(&id)
+	return id, err
+}
+
+func dbUpdateCampaign(ctx context.Context, c *Campaign) error {
+	pixelsJSON, _ := json.Marshal(c.Pixels)
+	_, err := pool.Exec(ctx, `UPDATE crm_campaigns SET
+		name=$1, slug=$2, description=$3, product_ids=$4, pixels=$5,
+		form_note=$6, custom_script=$7, custom_html=$8,
+		redirect_type=$9, redirect_url=$10, status=$11, updated_at=NOW() WHERE id=$12`,
+		c.Name, c.Slug, c.Description, c.ProductIDs, pixelsJSON,
+		c.FormNote, c.CustomScript, c.CustomHTML, c.RedirectType, c.RedirectURL, c.Status, c.ID)
+	return err
+}
+
+func dbSlugExists(ctx context.Context, slug, excludeID string) (bool, error) {
+	var count int
+	var err error
+	if excludeID != "" {
+		err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_campaigns WHERE slug=$1 AND id!=$2`, slug, excludeID).Scan(&count)
+	} else {
+		err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM crm_campaigns WHERE slug=$1`, slug).Scan(&count)
+	}
+	return count > 0, err
+}
+
+func dbDeleteCampaign(ctx context.Context, id string) error {
+	_, err := pool.Exec(ctx, `DELETE FROM crm_campaigns WHERE id=$1`, id)
+	return err
+}
+
+func dbIncrCampaignLeads(ctx context.Context, campaignID string) {
+	pool.Exec(ctx, `UPDATE crm_campaigns SET leads_count=leads_count+1, updated_at=NOW() WHERE id=$1`, campaignID)
 }

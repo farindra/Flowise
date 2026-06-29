@@ -53,6 +53,37 @@ func main() {
 	// Lead nurturing
 	mux.HandleFunc("GET /api/leads/unresponded", apiAuth(internalKey, handleUnrespondedLeads))
 
+	// Salesmen
+	mux.HandleFunc("GET /api/salesmen", apiAuth(internalKey, handleListSalesmen))
+	mux.HandleFunc("POST /api/salesmen", apiAuth(internalKey, handleCreateSalesman))
+	mux.HandleFunc("GET /api/salesmen/{id}", apiAuth(internalKey, handleGetSalesman))
+	mux.HandleFunc("PUT /api/salesmen/{id}", apiAuth(internalKey, handleUpdateSalesman))
+	mux.HandleFunc("DELETE /api/salesmen/{id}", apiAuth(internalKey, handleDeleteSalesman))
+
+	// Campaigns (internal CRUD)
+	mux.HandleFunc("GET /api/campaigns/check-slug", apiAuth(internalKey, handleCheckSlug))
+	mux.HandleFunc("GET /api/campaigns", apiAuth(internalKey, handleListCampaigns))
+	mux.HandleFunc("POST /api/campaigns", apiAuth(internalKey, handleCreateCampaign))
+	mux.HandleFunc("GET /api/campaigns/{id}", apiAuth(internalKey, handleGetCampaign))
+	mux.HandleFunc("PUT /api/campaigns/{id}", apiAuth(internalKey, handleUpdateCampaign))
+	mux.HandleFunc("DELETE /api/campaigns/{id}", apiAuth(internalKey, handleDeleteCampaign))
+
+	// Public campaign endpoints (no auth — untuk landing page & form submit)
+	mux.HandleFunc("GET /api/public/campaigns/{slug}", handlePublicGetCampaign)
+	mux.HandleFunc("POST /api/public/campaigns/{slug}/submit", handlePublicSubmitCampaign)
+	mux.HandleFunc("OPTIONS /api/public/campaigns/{slug}/submit", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Static files (logo, image assets)
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+
+	// Landing page HTML — serve langsung dari go-crm tanpa Flowise
+	mux.HandleFunc("GET /{slug}", handlePublicLandingPage)
+
 	// Stats for dashboard
 	mux.HandleFunc("GET /api/stats", apiAuth(internalKey, handleStats))
 

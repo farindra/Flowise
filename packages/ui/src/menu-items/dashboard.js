@@ -28,7 +28,8 @@ import {
     IconHelp,
     IconSearch,
     IconBrandTelegram,
-    IconDeviceDesktopAnalytics
+    IconDeviceDesktopAnalytics,
+    IconSpeakerphone
 } from '@tabler/icons-react'
 
 // constant
@@ -61,7 +62,8 @@ const icons = {
     IconHelp,
     IconSearch,
     IconBrandTelegram,
-    IconDeviceDesktopAnalytics
+    IconDeviceDesktopAnalytics,
+    IconSpeakerphone
 }
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
@@ -336,6 +338,22 @@ const dashboard = {
                     type: 'item',
                     url: '/crm-leads',
                     icon: icons.IconUsers,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'crm-salesmen',
+                    title: 'Tim Salesman',
+                    type: 'item',
+                    url: '/crm-salesmen',
+                    icon: icons.IconUsersGroup,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'crm-campaigns',
+                    title: 'Campaign',
+                    type: 'item',
+                    url: '/crm-campaigns',
+                    icon: icons.IconSpeakerphone,
                     breadcrumbs: true
                 }
             ]

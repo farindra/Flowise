@@ -126,7 +126,11 @@ function ZoneCard({ zone }) {
                     </Box>
                     <Stack direction='row' spacing={0.5} alignItems='center'>
                         <Chip size='small' label={statusLabel} color={statusColor} />
-                        <IconButton size='small' onClick={(e) => setAnchorEl(e.currentTarget)}>
+                        <IconButton
+                            size='small'
+                            onClick={(e) => setAnchorEl(e.currentTarget)}
+                            sx={{ color: 'text.primary', bgcolor: 'action.hover', '&:hover': { bgcolor: 'action.selected' } }}
+                        >
                             {sending ? <CircularProgress size={14} /> : <IconDotsVertical size={16} />}
                         </IconButton>
                     </Stack>
@@ -147,9 +151,15 @@ function ZoneCard({ zone }) {
             </Paper>
 
             <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={() => setAnchorEl(null)}>
-                <MenuItem dense disabled sx={{ fontSize: 11, opacity: '1 !important', color: 'text.disabled' }}>
-                    Kirim Laporan
-                </MenuItem>
+                <Box sx={{ px: 2, py: 0.5 }}>
+                    <Typography
+                        variant='caption'
+                        color='text.secondary'
+                        sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}
+                    >
+                        Kirim Laporan
+                    </Typography>
+                </Box>
                 <MenuItem dense onClick={() => sendReport('telegram')}>
                     <ListItemIcon>
                         <IconBrandTelegram size={16} color='#2AABEE' />
