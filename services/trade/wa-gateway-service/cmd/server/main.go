@@ -165,6 +165,35 @@ func main() {
 		})
 	})
 
+	// Internal API: send WA message (used by Flowise tools for admin notifications).
+	// POST /internal/send-wa?token=<qrToken>
+	// Body: {"to":"628xxx","text":"..."}
+	http.HandleFunc("/internal/send-wa", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Query().Get("token") != qrToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			To   string `json:"to"`
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.To == "" || body.Text == "" {
+			http.Error(w, "invalid body: need {to, text}", http.StatusBadRequest)
+			return
+		}
+		if err := wa.SendText(r.Context(), body.To, body.Text); err != nil {
+			log.Printf("internal/send-wa to %s error: %v", body.To, err)
+			http.Error(w, "send error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "sent", "to": body.To})
+	})
+
 	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

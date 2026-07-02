@@ -40,9 +40,9 @@ type flowiseMessage struct {
 }
 
 type flowiseRequest struct {
-	Question  string           `json:"question"`
-	SessionID string           `json:"sessionId,omitempty"`
-	History   []flowiseMessage `json:"history,omitempty"`
+	Question string           `json:"question"`
+	ChatID   string           `json:"chatId,omitempty"`
+	History  []flowiseMessage `json:"history,omitempty"`
 }
 
 type flowiseResponse struct {
@@ -60,9 +60,9 @@ func (c *FlowiseClient) GenerateNatural(ctx context.Context, message, phoneNumbe
 	}
 
 	req := flowiseRequest{
-		Question:  q,
-		SessionID: phoneNumber,
-		History:   convertHistory(history),
+		Question: q,
+		ChatID:   phoneNumber,
+		History:  convertHistory(history),
 	}
 
 	body, err := json.Marshal(req)
@@ -101,10 +101,10 @@ func (c *FlowiseClient) GenerateNatural(ctx context.Context, message, phoneNumbe
 // response. No history, no decoration — used by owner assistant commands.
 func (c *FlowiseClient) AskDirect(ctx context.Context, question, sessionID string) string {
 	type req struct {
-		Question  string `json:"question"`
-		SessionID string `json:"sessionId,omitempty"`
+		Question string `json:"question"`
+		ChatID   string `json:"chatId,omitempty"`
 	}
-	body, err := json.Marshal(req{Question: question, SessionID: sessionID})
+	body, err := json.Marshal(req{Question: question, ChatID: sessionID})
 	if err != nil {
 		return ""
 	}

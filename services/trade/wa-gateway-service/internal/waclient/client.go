@@ -14,6 +14,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
@@ -179,6 +180,14 @@ func (c *Client) PhoneNumber() string {
 
 // Logout disconnects and removes the device credentials, then reconnects to
 // start the QR pairing flow automatically.
+// SendText sends a plain-text WA message to any JID (phone number format: 628xxx without + or spaces).
+func (c *Client) SendText(ctx context.Context, phone, text string) error {
+	jid := types.NewJID(phone, types.DefaultUserServer)
+	msg := &waE2E.Message{Conversation: proto.String(text)}
+	_, err := c.WA.SendMessage(ctx, jid, msg)
+	return err
+}
+
 func (c *Client) Logout(ctx context.Context) error {
 	if err := c.WA.Logout(ctx); err != nil {
 		c.WA.Disconnect()

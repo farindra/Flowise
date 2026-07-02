@@ -212,6 +212,27 @@ func handleSessionLogout(mgr *SessionManager) http.HandlerFunc {
 	}
 }
 
+// POST /internal/send — send outbound WA message using any connected session
+// Body: {"to":"628xxx","text":"..."}
+// Auth: X-Internal-Key header
+func handleSendMessage(mgr *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			To   string `json:"to"`
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.To == "" || body.Text == "" {
+			jsonErr(w, 400, "to and text are required")
+			return
+		}
+		if err := mgr.SendFromAny(r.Context(), body.To, body.Text); err != nil {
+			jsonErr(w, 500, err.Error())
+			return
+		}
+		jsonOK(w, map[string]string{"status": "sent", "to": body.To})
+	}
+}
+
 // POST /api/sessions/{id}/pair-phone
 func handleSessionPairPhone(mgr *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

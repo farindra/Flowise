@@ -52,6 +52,9 @@ func main() {
 	mux.HandleFunc("POST /api/sessions/{id}/logout", apiAuth(internalKey, handleSessionLogout(mgr)))
 	mux.HandleFunc("POST /api/sessions/{id}/pair-phone", apiAuth(internalKey, handleSessionPairPhone(mgr)))
 
+	// Internal: send outbound WA message (used by Flowise checkout_to_cs / hubungi_admin_wa tools)
+	mux.HandleFunc("POST /internal/send", apiAuth(internalKey, handleSendMessage(mgr)))
+
 	// Health
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

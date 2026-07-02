@@ -16,6 +16,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
@@ -215,6 +216,14 @@ func (s *WASession) Disconnect() {
 	s.waClient.Disconnect()
 }
 
+// SendText sends a plain-text WA message to a phone number (format: 628xxx without + or spaces).
+func (s *WASession) SendText(ctx context.Context, phone, text string) error {
+	jid := types.NewJID(phone, types.DefaultUserServer)
+	msg := &waE2E.Message{Conversation: proto.String(text)}
+	_, err := s.waClient.SendMessage(ctx, jid, msg)
+	return err
+}
+
 // handleEvent processes whatsmeow events
 func (s *WASession) handleEvent(rawEvt interface{}) {
 	switch evt := rawEvt.(type) {
@@ -257,11 +266,10 @@ func (s *WASession) handleMessage(evt *events.Message) {
 		return
 	}
 
-	sessionID := senderPhone + "@" + s.id
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
-	reply, err := s.callFlowise(ctx, text, sessionID)
+	reply, err := s.callFlowise(ctx, text, senderPhone)
 	if err != nil {
 		fmt.Printf("[%s] Flowise error (%s): %v\n", s.name, senderPhone, err)
 		if s.humanContact != "" {
@@ -283,8 +291,8 @@ func (s *WASession) handleMessage(evt *events.Message) {
 func (s *WASession) callFlowise(ctx context.Context, question, sessionID string) (string, error) {
 	url := s.flowiseBaseURL + "/api/v1/prediction/" + s.chatflowID
 	body, _ := json.Marshal(map[string]any{
-		"question":  question,
-		"sessionId": sessionID,
+		"question": question,
+		"chatId":   sessionID,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

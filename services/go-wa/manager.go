@@ -127,6 +127,18 @@ func (m *SessionManager) Logout(ctx context.Context, id string) error {
 	return s.Logout(ctx)
 }
 
+// SendFromAny sends a WA text message using the first connected, logged-in session.
+func (m *SessionManager) SendFromAny(ctx context.Context, to, text string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		if s.waClient.IsConnected() && s.waClient.IsLoggedIn() {
+			return s.SendText(ctx, to, text)
+		}
+	}
+	return fmt.Errorf("no connected WA session available")
+}
+
 // ListStatus returns status info for all sessions.
 func (m *SessionManager) ListStatus() []map[string]any {
 	m.mu.RLock()

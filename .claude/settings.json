@@ -1,0 +1,18 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(PGPASSWORD=xfydBwYFRTSZT6ia *)",
+            "Bash(/www/server/mysql/bin/mariadb *)",
+            "Bash(/www/server/pgsql/bin/psql *)",
+            "Bash(export PATH=\"/usr/local/bin:/www/server/nodejs/v24.16.0/bin:$PATH\" && pm2 logs *)",
+            "Bash(export PATH=\"/usr/local/bin:/www/server/nodejs/v24.16.0/bin:$PATH\" && pm2 list*)",
+            "Bash(export PATH=\"/usr/local/bin:/www/server/nodejs/v24.16.0/bin:$PATH\" && pm2 status*)",
+            "Bash(curl -s -H \"Authorization: Bearer *)",
+            "Bash(curl -s \"http://127.0.0.1:*)",
+            "Bash(docker compose logs *)",
+            "Bash(docker compose ps *)",
+            "Bash(go version*)",
+            "Bash(go env*)"
+        ]
+    }
+}
