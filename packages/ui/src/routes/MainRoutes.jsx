@@ -52,9 +52,6 @@ const Evaluators = Loadable(lazy(() => import('@/views/evaluators')))
 // account routing
 const Account = Loadable(lazy(() => import('@/views/account')))
 
-// files routing
-const Files = Loadable(lazy(() => import('@/views/files')))
-
 // logs routing
 const Logs = Loadable(lazy(() => import('@/views/serverlogs')))
 
@@ -72,6 +69,10 @@ const SSOSuccess = Loadable(lazy(() => import('@/views/auth/ssoSuccess')))
 const WASession = Loadable(lazy(() => import('@/views/wa-session')))
 const FAQ = Loadable(lazy(() => import('@/views/faq')))
 const LogViewer = Loadable(lazy(() => import('@/views/log-viewer')))
+const CRMLeads = Loadable(lazy(() => import('@/views/crm-leads')))
+const CRMSalesmen = Loadable(lazy(() => import('@/views/crm-salesmen')))
+const CRMCampaigns = Loadable(lazy(() => import('@/views/crm-campaigns')))
+const IoTMonitor = Loadable(lazy(() => import('@/views/iot-monitor')))
 const TelegramSession = Loadable(lazy(() => import('@/views/telegram-session')))
 
 // ==============================|| MAIN ROUTING ||============================== //
@@ -359,6 +360,22 @@ const MainRoutes = {
         {
             path: '/log-viewer',
             element: <LogViewer />
+        },
+        {
+            path: '/crm-leads',
+            element: <CRMLeads />
+        },
+        {
+            path: '/crm-salesmen',
+            element: <CRMSalesmen />
+        },
+        {
+            path: '/crm-campaigns',
+            element: <CRMCampaigns />
+        },
+        {
+            path: '/iot-monitor',
+            element: <IoTMonitor />
         },
         {
             path: '/telegram-session',

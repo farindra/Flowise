@@ -27,7 +27,9 @@ import {
     IconBrandWhatsapp,
     IconHelp,
     IconSearch,
-    IconBrandTelegram
+    IconBrandTelegram,
+    IconDeviceDesktopAnalytics,
+    IconSpeakerphone
 } from '@tabler/icons-react'
 
 // constant
@@ -59,7 +61,9 @@ const icons = {
     IconBrandWhatsapp,
     IconHelp,
     IconSearch,
-    IconBrandTelegram
+    IconBrandTelegram,
+    IconDeviceDesktopAnalytics,
+    IconSpeakerphone
 }
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
@@ -112,15 +116,19 @@ const dashboard = {
                     breadcrumbs: true,
                     permission: 'assistants:view'
                 },
-                ...(showMarketplaces ? [{
-                    id: 'marketplaces',
-                    title: 'Marketplaces',
-                    type: 'item',
-                    url: '/marketplaces',
-                    icon: icons.IconBuildingStore,
-                    breadcrumbs: true,
-                    permission: 'templates:marketplace,templates:custom'
-                }] : []),
+                ...(showMarketplaces
+                    ? [
+                          {
+                              id: 'marketplaces',
+                              title: 'Marketplaces',
+                              type: 'item',
+                              url: '/marketplaces',
+                              icon: icons.IconBuildingStore,
+                              breadcrumbs: true,
+                              permission: 'templates:marketplace,templates:custom'
+                          }
+                      ]
+                    : []),
                 {
                     id: 'tools',
                     title: 'Tools',
@@ -320,6 +328,37 @@ const dashboard = {
             ]
         },
         {
+            id: 'crm',
+            title: 'CRM',
+            type: 'group',
+            children: [
+                {
+                    id: 'crm-leads',
+                    title: 'CRM Leads',
+                    type: 'item',
+                    url: '/crm-leads',
+                    icon: icons.IconUsers,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'crm-salesmen',
+                    title: 'Tim Salesman',
+                    type: 'item',
+                    url: '/crm-salesmen',
+                    icon: icons.IconUsersGroup,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'crm-campaigns',
+                    title: 'Campaign',
+                    type: 'item',
+                    url: '/crm-campaigns',
+                    icon: icons.IconSpeakerphone,
+                    breadcrumbs: true
+                }
+            ]
+        },
+        {
             id: 'maintenance',
             title: 'Maintenance',
             type: 'group',
@@ -330,6 +369,14 @@ const dashboard = {
                     type: 'item',
                     url: '/log-viewer',
                     icon: icons.IconSearch,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'iot-monitor',
+                    title: 'IoT Monitor',
+                    type: 'item',
+                    url: '/iot-monitor',
+                    icon: icons.IconDeviceDesktopAnalytics,
                     breadcrumbs: true
                 }
             ]

@@ -51,6 +51,7 @@ func main() {
 	mux.HandleFunc("POST /api/sessions/{id}/connect", apiAuth(internalKey, handleSessionConnect(mgr)))
 	mux.HandleFunc("POST /api/sessions/{id}/logout", apiAuth(internalKey, handleSessionLogout(mgr)))
 	mux.HandleFunc("POST /api/sessions/{id}/pair-phone", apiAuth(internalKey, handleSessionPairPhone(mgr)))
+	mux.HandleFunc("POST /api/sessions/{id}/send", apiAuth(internalKey, handleSessionSend(mgr)))
 
 	// Internal: send outbound WA message (used by Flowise checkout_to_cs / hubungi_admin_wa tools)
 	mux.HandleFunc("POST /internal/send", apiAuth(internalKey, handleSendMessage(mgr)))

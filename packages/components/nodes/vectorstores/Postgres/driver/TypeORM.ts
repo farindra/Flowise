@@ -122,16 +122,20 @@ export class TypeORMDriver extends VectorStoreDriver {
             // Sanitize documents to remove NULL characters that cause Postgres errors
             const sanitizedDocs = this.sanitizeDocuments(documents)
 
-            const rows = vectors.map((embedding, idx) => {
+            const rows = vectors.reduce((acc, embedding, idx) => {
+                if (!embedding || embedding.length === 0) {
+                    console.warn(`[TypeORM] Skipping chunk ${idx} — empty embedding returned by model`)
+                    return acc
+                }
                 const embeddingString = `[${embedding.join(',')}]`
-                const documentRow = {
+                acc.push({
                     id: documentOptions?.ids?.length ? documentOptions.ids[idx] : uuid(),
                     pageContent: sanitizedDocs[idx].pageContent,
                     embedding: embeddingString,
                     metadata: sanitizedDocs[idx].metadata
-                }
-                return documentRow
-            })
+                })
+                return acc
+            }, [] as any[])
 
             const documentRepository = instance.appDataSource.getRepository(instance.documentEntity)
             const _batchSize = this.nodeData.inputs?.batchSize

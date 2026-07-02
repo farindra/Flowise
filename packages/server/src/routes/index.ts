@@ -26,6 +26,9 @@ import internalPredictionRouter from './internal-predictions'
 import leadsRouter from './leads'
 import loadPromptRouter from './load-prompts'
 import logsRouter from './log'
+import logSearchRouter from './log-search'
+import crmRouter from './crm'
+import iotRouter from './iot'
 import marketplacesRouter from './marketplaces'
 import mcpEndpointRouter from './mcp-endpoint'
 import mcpServerRouter from './mcp-server'
@@ -71,13 +74,14 @@ import userRouter from '../enterprise/routes/user.route'
 import workspaceUserRouter from '../enterprise/routes/workspace-user.route'
 import workspaceRouter from '../enterprise/routes/workspace.route'
 import { IdentityManager } from '../IdentityManager'
+import { checkPermission } from '../enterprise/rbac/PermissionCheck'
 import waSessionRouter from './wa-session'
 import telegramSessionRouter from './telegram-session'
 
 const router = express.Router()
 
 router.use('/ping', pingRouter)
-router.use('/apikey', apikeyRouter)
+router.use('/apikey', checkPermission('apikeys:view'), apikeyRouter)
 router.use('/assistants', assistantsRouter)
 router.use('/attachments', attachmentsRouter)
 router.use('/chatflows', chatflowsRouter)
@@ -86,7 +90,7 @@ router.use('/chatmessage', chatMessageRouter)
 router.use('/chatflows-uploads', chatflowsUploadsRouter)
 router.use('/components-credentials', componentsCredentialsRouter)
 router.use('/components-credentials-icon', componentsCredentialsIconRouter)
-router.use('/credentials', credentialsRouter)
+router.use('/credentials', checkPermission('credentials:view'), credentialsRouter)
 router.use('/datasets', IdentityManager.checkFeatureByPlan('feat:datasets'), datasetRouter)
 router.use('/document-store', documentStoreRouter)
 router.use('/evaluations', IdentityManager.checkFeatureByPlan('feat:evaluations'), evaluationsRouter)
@@ -138,7 +142,7 @@ router.use('/mcp', mcpEndpointRouter)
 
 router.use('/auth', authRouter)
 router.use('/audit', IdentityManager.checkFeatureByPlan('feat:login-activity'), auditRouter)
-router.use('/user', userRouter)
+router.use('/user', checkPermission('users:manage'), userRouter)
 router.use('/organization', organizationRouter)
 router.use('/role', IdentityManager.checkFeatureByPlan('feat:roles'), roleRouter)
 router.use('/organizationuser', organizationUserRoute)
@@ -147,6 +151,9 @@ router.use('/workspaceuser', workspaceUserRouter)
 router.use('/account', accountRouter)
 router.use('/loginmethod', loginMethodRouter)
 router.use('/logs', IdentityManager.checkFeatureByPlan('feat:logs'), logsRouter)
+router.use('/log-search', logSearchRouter)
+router.use('/crm', crmRouter)
+router.use('/iot', iotRouter)
 // router.use('/files', IdentityManager.checkFeatureByPlan('feat:files'), filesRouter)
 
 router.use('/wa-session', waSessionRouter)

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -255,6 +257,34 @@ func (s *WASession) handleEvent(rawEvt interface{}) {
 	}
 }
 
+func (s *WASession) SendMessage(ctx context.Context, phone, text string) error {
+	phone = strings.TrimPrefix(phone, "+")
+	if strings.HasPrefix(phone, "0") {
+		phone = "62" + phone[1:]
+	}
+	jid, err := parseJID(phone)
+	if err != nil {
+		return fmt.Errorf("invalid phone: %w", err)
+	}
+	msg := &waE2E.Message{Conversation: proto.String(mdToWA(text))}
+	_, err = s.waClient.SendMessage(ctx, jid, msg)
+	return err
+}
+
+const errCodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+func newErrorCode() string {
+	b := make([]byte, 5)
+	for i := range b {
+		b[i] = errCodeChars[rand.Intn(len(errCodeChars))]
+	}
+	return string(b)
+}
+
+func parseJID(phone string) (types.JID, error) {
+	return types.ParseJID(phone + "@s.whatsapp.net")
+}
+
 func (s *WASession) handleMessage(evt *events.Message) {
 	text := extractText(evt.Message)
 	if text == "" {
@@ -271,18 +301,23 @@ func (s *WASession) handleMessage(evt *events.Message) {
 
 	reply, err := s.callFlowise(ctx, text, senderPhone)
 	if err != nil {
-		fmt.Printf("[%s] Flowise error (%s): %v\n", s.name, senderPhone, err)
-		if s.humanContact != "" {
-			reply = fmt.Sprintf("Maaf, terjadi gangguan. Silakan hubungi %s", s.humanContact)
+		code := newErrorCode()
+		if ctx.Err() != nil {
+			fmt.Printf("[%s] [%s] timeout (%s)\n", s.name, code, senderPhone)
+			reply = fmt.Sprintf("🔴 Server sedang sibuk, coba lagi nanti. (kode: %s)", code)
 		} else {
-			return
+			fmt.Printf("[%s] [%s] error (%s): %v\n", s.name, code, senderPhone, err)
+			reply = fmt.Sprintf("⚠️ Terjadi kesalahan, silakan coba kembali. (kode: %s)", code)
+		}
+		if s.humanContact != "" {
+			reply += "\nAtau hubungi admin: " + s.humanContact
 		}
 	}
 	if reply == "" {
 		return
 	}
 
-	msg := &waE2E.Message{Conversation: proto.String(reply)}
+	msg := &waE2E.Message{Conversation: proto.String(mdToWA(reply))}
 	if _, err := s.waClient.SendMessage(ctx, evt.Info.Chat, msg); err != nil {
 		fmt.Printf("[%s] Send error: %v\n", s.name, err)
 	}
@@ -322,6 +357,37 @@ func (s *WASession) callFlowise(ctx context.Context, question, sessionID string)
 		return string(data), nil
 	}
 	return result.Text, nil
+}
+
+var (
+	waReBold    = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	waReItalic  = regexp.MustCompile(`(?m)(?:^|[^*])\*([^*\n]+)\*(?:[^*]|$)`)
+	waReHeading = regexp.MustCompile(`(?m)^#{1,3}\s+(.+)$`)
+	waReBullet  = regexp.MustCompile(`(?m)^\*[ \t]+`)
+	waReLink    = regexp.MustCompile(`\[([^\]]+)\]\s*\(([^)]+)\)`)
+	waReHRule   = regexp.MustCompile(`(?m)^---+$`)
+)
+
+// mdToWA converts Markdown to WhatsApp-compatible format.
+// WhatsApp: *bold*, _italic_, ~strike~, `mono`
+func mdToWA(s string) string {
+	s = waReHeading.ReplaceAllString(s, "*$1*")
+	s = waReBold.ReplaceAllString(s, "*$1*")
+	s = waReBullet.ReplaceAllString(s, "• ")
+	s = waReLink.ReplaceAllStringFunc(s, func(m string) string {
+		parts := waReLink.FindStringSubmatch(m)
+		if len(parts) < 3 {
+			return m
+		}
+		text := strings.TrimSpace(parts[1])
+		url := strings.TrimSpace(parts[2])
+		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+			return text + ": " + url
+		}
+		return text
+	})
+	s = waReHRule.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // extractText gets plain text from any message type

@@ -7,6 +7,16 @@ const router = express.Router()
 const TG_SERVICE_URL = process.env.TG_SERVICE_URL || 'http://127.0.0.1:8081'
 const TG_INTERNAL_KEY = process.env.TG_INTERNAL_KEY || 'ob-tg-internal-2026'
 
+function sendBody(proxyReq: http.ClientRequest, req: Request, method: string) {
+    if (method !== 'GET' && method !== 'DELETE') {
+        // Express json middleware already consumed the stream — serialize parsed body
+        const bodyStr = req.body !== undefined ? JSON.stringify(req.body) : ''
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyStr))
+        proxyReq.write(bodyStr)
+    }
+    proxyReq.end()
+}
+
 function proxyRequest(method: string, path: string) {
     return async (req: Request, res: Response) => {
         const url = `${TG_SERVICE_URL}${path}`
@@ -29,11 +39,7 @@ function proxyRequest(method: string, path: string) {
             res.status(502).json({ error: 'Telegram service unreachable', detail: err.message })
         })
 
-        if (method !== 'GET' && method !== 'DELETE') {
-            req.pipe(proxyReq)
-        } else {
-            proxyReq.end()
-        }
+        sendBody(proxyReq, req, method)
     }
 }
 
@@ -60,11 +66,7 @@ function proxyWithParam(method: string, pathFn: (id: string) => string) {
             res.status(502).json({ error: 'Telegram service unreachable', detail: err.message })
         })
 
-        if (method !== 'GET' && method !== 'DELETE') {
-            req.pipe(proxyReq)
-        } else {
-            proxyReq.end()
-        }
+        sendBody(proxyReq, req, method)
     }
 }
 
@@ -75,12 +77,21 @@ router.get('/bots', proxyRequest('GET', '/api/bots'))
 router.post('/bots', proxyRequest('POST', '/api/bots'))
 
 // PUT /api/v1/telegram-session/bots/:id
-router.put('/bots/:id', proxyWithParam('PUT', (id) => `/api/bots/${id}`))
+router.put(
+    '/bots/:id',
+    proxyWithParam('PUT', (id) => `/api/bots/${id}`)
+)
 
 // DELETE /api/v1/telegram-session/bots/:id
-router.delete('/bots/:id', proxyWithParam('DELETE', (id) => `/api/bots/${id}`))
+router.delete(
+    '/bots/:id',
+    proxyWithParam('DELETE', (id) => `/api/bots/${id}`)
+)
 
 // POST /api/v1/telegram-session/bots/:id/register
-router.post('/bots/:id/register', proxyWithParam('POST', (id) => `/api/bots/${id}/register`))
+router.post(
+    '/bots/:id/register',
+    proxyWithParam('POST', (id) => `/api/bots/${id}/register`)
+)
 
 export default router

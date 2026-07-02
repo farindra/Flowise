@@ -1,3 +1,4 @@
+import PropTypes from 'prop-types'
 import { useState } from 'react'
 import {
     Box,
@@ -30,8 +31,7 @@ import {
 } from '@tabler/icons-react'
 import MainCard from '@/ui-component/cards/MainCard'
 
-const SEARCH_URL = 'http://127.0.0.1:8200/logs/search'
-const INTERNAL_KEY = 'ob-jurnal-internal-2026'
+const SEARCH_URL = '/api/v1/log-search/search'
 
 const levelColor = {
     ERROR: 'error',
@@ -64,9 +64,15 @@ function ExpandableRow({ row }) {
                 </TableCell>
                 <TableCell sx={{ py: 1 }}>
                     {row.code ? (
-                        <Chip size='small' label={row.code} sx={{ fontFamily: 'monospace', fontWeight: 700, bgcolor: '#fff8e1', color: '#f57f17', fontSize: 12 }} />
+                        <Chip
+                            size='small'
+                            label={row.code}
+                            sx={{ fontFamily: 'monospace', fontWeight: 700, bgcolor: '#fff8e1', color: '#f57f17', fontSize: 12 }}
+                        />
                     ) : (
-                        <Typography variant='caption' color='text.disabled'>—</Typography>
+                        <Typography variant='caption' color='text.disabled'>
+                            —
+                        </Typography>
                     )}
                 </TableCell>
                 <TableCell sx={{ py: 1 }}>
@@ -89,7 +95,14 @@ function ExpandableRow({ row }) {
                         <Box sx={{ m: 1, p: 2, bgcolor: 'grey.950', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
                             <Typography
                                 component='pre'
-                                sx={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all', m: 0, color: 'text.secondary' }}
+                                sx={{
+                                    fontFamily: 'monospace',
+                                    fontSize: 12,
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                    m: 0,
+                                    color: 'text.secondary'
+                                }}
                             >
                                 {row.message}
                             </Typography>
@@ -99,6 +112,16 @@ function ExpandableRow({ row }) {
             </TableRow>
         </>
     )
+}
+
+ExpandableRow.propTypes = {
+    row: PropTypes.shape({
+        level: PropTypes.string,
+        code: PropTypes.string,
+        source: PropTypes.string,
+        message: PropTypes.string,
+        time: PropTypes.string
+    })
 }
 
 export default function LogViewer() {
@@ -114,9 +137,7 @@ export default function LogViewer() {
         setLoading(true)
         setError(null)
         try {
-            const res = await fetch(`${SEARCH_URL}?q=${encodeURIComponent(q)}&date=${date}`, {
-                headers: { 'X-Internal-Key': INTERNAL_KEY }
-            })
+            const res = await fetch(`${SEARCH_URL}?q=${encodeURIComponent(q)}&date=${date}`)
             const data = await res.json()
             if (data.error) throw new Error(data.error)
             setResults(data)
@@ -146,7 +167,6 @@ export default function LogViewer() {
                         value={query}
                         onChange={handleQueryChange}
                         onKeyDown={handleKey}
-                        autoFocus
                         sx={{ minWidth: 280, fontFamily: 'monospace', flex: 1 }}
                         InputProps={{
                             startAdornment: (
@@ -157,13 +177,7 @@ export default function LogViewer() {
                             sx: { fontFamily: 'monospace', letterSpacing: '0.05em' }
                         }}
                     />
-                    <TextField
-                        size='small'
-                        type='date'
-                        value={date}
-                        onChange={(e) => setDate(e.target.value)}
-                        sx={{ width: 160 }}
-                    />
+                    <TextField size='small' type='date' value={date} onChange={(e) => setDate(e.target.value)} sx={{ width: 160 }} />
                     <Button
                         variant='contained'
                         onClick={search}
@@ -186,7 +200,9 @@ export default function LogViewer() {
                 {error && <Alert severity='error'>{error}</Alert>}
 
                 {results && results.total === 0 && (
-                    <Alert severity='info'>Tidak ada hasil untuk &quot;{results.query}&quot; pada {results.date}</Alert>
+                    <Alert severity='info'>
+                        Tidak ada hasil untuk &quot;{results.query}&quot; pada {results.date}
+                    </Alert>
                 )}
 
                 {results && results.total > 0 && (

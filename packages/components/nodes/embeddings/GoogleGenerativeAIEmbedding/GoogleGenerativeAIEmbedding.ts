@@ -66,14 +66,13 @@ class GoogleGenerativeAIEmbedding_Embeddings implements INode {
                 type: 'options',
                 description: 'Type of task for which the embedding will be used',
                 options: [
-                    { label: 'TASK_TYPE_UNSPECIFIED', name: 'TASK_TYPE_UNSPECIFIED' },
-                    { label: 'RETRIEVAL_QUERY', name: 'RETRIEVAL_QUERY' },
                     { label: 'RETRIEVAL_DOCUMENT', name: 'RETRIEVAL_DOCUMENT' },
+                    { label: 'RETRIEVAL_QUERY', name: 'RETRIEVAL_QUERY' },
                     { label: 'SEMANTIC_SIMILARITY', name: 'SEMANTIC_SIMILARITY' },
                     { label: 'CLASSIFICATION', name: 'CLASSIFICATION' },
                     { label: 'CLUSTERING', name: 'CLUSTERING' }
                 ],
-                default: 'TASK_TYPE_UNSPECIFIED'
+                default: 'RETRIEVAL_DOCUMENT'
             },
             {
                 label: 'Strip New Lines',
@@ -100,7 +99,7 @@ class GoogleGenerativeAIEmbedding_Embeddings implements INode {
         const apiKey = getCredentialParam('googleGenerativeAPIKey', credentialData, nodeData)
         const stripNewLines = nodeData.inputs?.stripNewLines as boolean
 
-        let taskType: TaskType
+        let taskType: TaskType | undefined
         switch (nodeData.inputs?.tasktype as string) {
             case 'RETRIEVAL_QUERY':
                 taskType = TaskType.RETRIEVAL_QUERY
@@ -118,7 +117,7 @@ class GoogleGenerativeAIEmbedding_Embeddings implements INode {
                 taskType = TaskType.CLUSTERING
                 break
             default:
-                taskType = TaskType.TASK_TYPE_UNSPECIFIED
+                taskType = undefined
                 break
         }
         const obj: GoogleGenerativeAIEmbeddingsParams & { stripNewLines?: boolean } = {
