@@ -74,6 +74,10 @@ func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		for _, f := range auditMatches {
 			results = append(results, h.searchAuditFile(f, q)...)
 		}
+
+		// 3. Search go-telegram error log
+		gtLog := filepath.Join(h.flowiseLogsDir, "go-telegram-error.log")
+		results = append(results, h.searchFile(gtLog, q, date, "go-telegram")...)
 	}
 
 	// Sort by time desc
@@ -146,6 +150,32 @@ func (h *Handler) searchAuditFile(path, q string) []LogEntry {
 
 func parseLine(line, source string) LogEntry {
 	entry := LogEntry{Source: source, Message: line, Level: "INFO"}
+
+	// Go log format: "2006/01/02 15:04:05 [BotName] [ERRCODE] error ..."
+	// Detected by YYYY/MM/DD HH:MM:SS prefix
+	if len(line) >= 19 && line[4] == '/' && line[7] == '/' && line[10] == ' ' && line[13] == ':' && line[16] == ':' {
+		entry.Time = strings.ReplaceAll(line[:10], "/", "-") + "T" + line[11:19]
+		rest := ""
+		if len(line) > 20 {
+			rest = line[20:]
+		}
+		entry.Message = rest
+		// Pattern: [BotName] [CODE] error ...
+		if i := strings.Index(rest, "] ["); i >= 0 {
+			codeStart := i + 3
+			if j := strings.Index(rest[codeStart:], "]"); j >= 0 {
+				code := rest[codeStart : codeStart+j]
+				if len(code) >= 4 && len(code) <= 6 {
+					entry.Code = code
+				}
+				afterCode := strings.TrimSpace(rest[codeStart+j+1:])
+				if strings.HasPrefix(afterCode, "error") || strings.HasPrefix(afterCode, "Error") {
+					entry.Level = "ERROR"
+				}
+			}
+		}
+		return entry
+	}
 
 	// Extract error code [XXXXX]
 	if i := strings.Index(line, " [ERROR] ["); i >= 0 {
