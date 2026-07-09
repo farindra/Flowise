@@ -3,7 +3,7 @@ module.exports = {
         {
             name: 'go-crm',
             script: './start.sh',
-            cwd: '/root/App/alazhar-agentic/services/go-crm',
+            cwd: '/www/wwwroot/agentic.oceanbearings.co.id/services/go-crm',
             interpreter: 'bash'
         }
     ]

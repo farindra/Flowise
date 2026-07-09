@@ -107,6 +107,13 @@ func (s *WASession) Connect(ctx context.Context) {
 
 func (s *WASession) runQRFlow(ctx context.Context) {
 	for {
+		// Each outer iteration owns its own signal channel to avoid double-close
+		// panic when multiple goroutines race through runQRFlow concurrently.
+		localCh := make(chan struct{})
+		s.mu.Lock()
+		s.qrReady = localCh
+		s.mu.Unlock()
+
 		qrChan, err := s.waClient.GetQRChannel(ctx)
 		if err != nil {
 			return
@@ -115,7 +122,7 @@ func (s *WASession) runQRFlow(ctx context.Context) {
 			return
 		}
 
-		var qrReadyClosed bool
+		var localChClosed bool
 		timedOut := false
 
 		for evt := range qrChan {
@@ -126,9 +133,9 @@ func (s *WASession) runQRFlow(ctx context.Context) {
 					s.currentQR = code.PNG()
 					s.mu.Unlock()
 				}
-				if !qrReadyClosed {
-					close(s.qrReady)
-					qrReadyClosed = true
+				if !localChClosed {
+					close(localCh)
+					localChClosed = true
 				}
 			case "success":
 				s.mu.Lock()
@@ -141,9 +148,8 @@ func (s *WASession) runQRFlow(ctx context.Context) {
 			case "timeout":
 				s.mu.Lock()
 				s.currentQR = nil
-				s.qrReady = make(chan struct{})
 				s.mu.Unlock()
-				qrReadyClosed = false
+				localChClosed = false
 				timedOut = true
 			}
 		}
@@ -318,7 +324,10 @@ func (s *WASession) handleMessage(evt *events.Message) {
 	}
 
 	msg := &waE2E.Message{Conversation: proto.String(mdToWA(reply))}
-	if _, err := s.waClient.SendMessage(ctx, evt.Info.Chat, msg); err != nil {
+	// Use a fresh context for send — the flowise ctx may already be expired on timeout.
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer sendCancel()
+	if _, err := s.waClient.SendMessage(sendCtx, evt.Info.Chat, msg); err != nil {
 		fmt.Printf("[%s] Send error: %v\n", s.name, err)
 	}
 }

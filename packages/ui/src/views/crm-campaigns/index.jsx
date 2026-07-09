@@ -49,6 +49,8 @@ import MainCard from '@/ui-component/cards/MainCard'
 import CampaignLanding from '@/views/campaign-landing'
 
 const API = '/api/v1/crm'
+const AUTH_HEADER = { 'x-request-from': 'internal' }
+const JSON_HEADERS = { ...AUTH_HEADER, 'Content-Type': 'application/json' }
 const CAMPAIGN_DOMAIN = import.meta.env.VITE_CAMPAIGN_DOMAIN || 'https://alazhar-campaign.farindra.com'
 
 const PIXEL_TYPES = [
@@ -177,7 +179,7 @@ function CampaignDialog({ open, campaign, onClose, onSaved }) {
         setSlugStatus('checking')
         try {
             const qs = excludeId ? `?slug=${slug}&exclude_id=${excludeId}` : `?slug=${slug}`
-            const res = await fetch(`${API}/campaigns/check-slug${qs}`)
+            const res = await fetch(`${API}/campaigns/check-slug${qs}`, { headers: AUTH_HEADER })
             const data = await res.json()
             setSlugStatus(data.exists ? 'taken' : 'ok')
         } catch {
@@ -221,12 +223,12 @@ function CampaignDialog({ open, campaign, onClose, onSaved }) {
             let counter = 2
             let exists = slugStatus === 'taken'
             if (!exists && slugStatus !== 'ok') {
-                const res = await fetch(`${API}/campaigns/check-slug?slug=${slug}${campaign?.id ? '&exclude_id=' + campaign.id : ''}`)
+                const res = await fetch(`${API}/campaigns/check-slug?slug=${slug}${campaign?.id ? '&exclude_id=' + campaign.id : ''}`, { headers: AUTH_HEADER })
                 exists = (await res.json()).exists
             }
             while (exists) {
                 const candidate = `${form.slug}-${counter}`
-                const res = await fetch(`${API}/campaigns/check-slug?slug=${candidate}${campaign?.id ? '&exclude_id=' + campaign.id : ''}`)
+                const res = await fetch(`${API}/campaigns/check-slug?slug=${candidate}${campaign?.id ? '&exclude_id=' + campaign.id : ''}`, { headers: AUTH_HEADER })
                 exists = (await res.json()).exists
                 if (!exists) slug = candidate
                 counter++
@@ -247,7 +249,7 @@ function CampaignDialog({ open, campaign, onClose, onSaved }) {
             const url = campaign ? `${API}/campaigns/${campaign.id}` : `${API}/campaigns`
             const res = await fetch(url, {
                 method: campaign ? 'PUT' : 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: JSON_HEADERS,
                 body: JSON.stringify(payload)
             })
             if (!res.ok) {
@@ -490,7 +492,7 @@ export default function CRMCampaigns() {
         setLoading(true)
         setError(null)
         try {
-            const res = await fetch(`${API}/campaigns`)
+            const res = await fetch(`${API}/campaigns`, { headers: AUTH_HEADER })
             setCampaigns(await res.json())
         } catch (e) {
             setError(e.message)
@@ -514,7 +516,7 @@ export default function CRMCampaigns() {
 
     const handleDelete = async (c) => {
         if (!window.confirm(`Hapus campaign "${c.name}"?`)) return
-        await fetch(`${API}/campaigns/${c.id}`, { method: 'DELETE' })
+        await fetch(`${API}/campaigns/${c.id}`, { method: 'DELETE', headers: AUTH_HEADER })
         fetchCampaigns()
     }
 

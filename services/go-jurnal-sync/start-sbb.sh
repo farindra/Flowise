@@ -1,0 +1,5 @@
+#!/bin/bash
+set -a
+source "$(dirname "$0")/.env.sbb"
+set +a
+exec "$(dirname "$0")/go-jurnal-sync"

@@ -9,7 +9,7 @@ import { useConfig } from '@/store/context/ConfigContext'
 const Logo = () => {
     const customization = useSelector((state) => state.customization)
     const { config } = useConfig()
-    const appName = config?.APP_NAME || 'Farindra Agentic'
+    const appName = config?.APP_NAME || 'Ocean Agentic'
 
     return (
         <div style={{ alignItems: 'center', display: 'flex', flexDirection: 'row', marginLeft: '10px', gap: '10px' }}>

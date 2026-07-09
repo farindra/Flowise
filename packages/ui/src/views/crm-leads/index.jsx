@@ -45,6 +45,8 @@ import {
 import MainCard from '@/ui-component/cards/MainCard'
 
 const API = '/api/v1/crm'
+const AUTH_HEADER = { 'x-request-from': 'internal' }
+const JSON_HEADERS = { ...AUTH_HEADER, 'Content-Type': 'application/json' }
 
 const STAGES = [
     { value: '', label: 'Semua Stage' },
@@ -166,7 +168,7 @@ function LeadDrawer({ lead, onClose, onSaved, salesmen }) {
             }
             const res = await fetch(`${API}/leads/${lead.id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: JSON_HEADERS,
                 body: JSON.stringify(payload)
             })
             if (!res.ok) throw new Error('Gagal simpan')
@@ -434,9 +436,9 @@ export default function CRMLeads() {
         try {
             const qs = stageFilter ? `?stage=${stageFilter}` : ''
             const [leadsRes, statsRes, salesmenRes] = await Promise.all([
-                fetch(`${API}/leads${qs}`),
-                fetch(`${API}/stats?period=month`),
-                fetch(`${API}/salesmen`)
+                fetch(`${API}/leads${qs}`, { headers: AUTH_HEADER }),
+                fetch(`${API}/stats?period=month`, { headers: AUTH_HEADER }),
+                fetch(`${API}/salesmen`, { headers: AUTH_HEADER })
             ])
             const [leadsData, statsData, salesmenData] = await Promise.all([leadsRes.json(), statsRes.json(), salesmenRes.json()])
             setLeads(Array.isArray(leadsData) ? leadsData : [])

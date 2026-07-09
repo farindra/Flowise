@@ -32,6 +32,8 @@ import { IconRefresh, IconPlus, IconEdit, IconTrash, IconPhone, IconBrandTelegra
 import MainCard from '@/ui-component/cards/MainCard'
 
 const API = '/api/v1/crm'
+const AUTH_HEADER = { 'x-request-from': 'internal' }
+const JSON_HEADERS = { ...AUTH_HEADER, 'Content-Type': 'application/json' }
 
 const EMPTY_FORM = {
     name: '',
@@ -89,7 +91,7 @@ function SalesmanDialog({ open, salesman, onClose, onSaved }) {
             const url = salesman ? `${API}/salesmen/${salesman.id}` : `${API}/salesmen`
             const res = await fetch(url, {
                 method: salesman ? 'PUT' : 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: JSON_HEADERS,
                 body: JSON.stringify({
                     ...form,
                     commission_rate: parseFloat(form.commission_rate) || 0,
@@ -284,7 +286,7 @@ export default function CRMSalesmen() {
         setLoading(true)
         setError(null)
         try {
-            const res = await fetch(`${API}/salesmen`)
+            const res = await fetch(`${API}/salesmen`, { headers: AUTH_HEADER })
             setSalesmen(await res.json())
         } catch (e) {
             setError(e.message)
@@ -308,7 +310,7 @@ export default function CRMSalesmen() {
 
     const handleDelete = async (s) => {
         if (!window.confirm(`Hapus salesman "${s.name}"? Leads yang sudah di-assign tidak akan berubah.`)) return
-        await fetch(`${API}/salesmen/${s.id}`, { method: 'DELETE' })
+        await fetch(`${API}/salesmen/${s.id}`, { method: 'DELETE', headers: AUTH_HEADER })
         fetchSalesmen()
     }
 
