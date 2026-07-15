@@ -22,7 +22,7 @@ import {
     TableRow,
     Typography
 } from '@mui/material'
-import { IconChevronDown, IconChevronUp, IconRefresh, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
+import { IconChevronDown, IconChevronUp, IconRefresh, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconTrash, IconX } from '@tabler/icons-react'
 import MainCard from '@/ui-component/cards/MainCard'
 
 const API = '/api/v1/sync-status'
@@ -178,7 +178,18 @@ export default function SyncStatus() {
                 </Dialog>
 
                 {error && <Alert severity='error'>{error}</Alert>}
-                {clearMsg && <Alert severity={clearMsg.startsWith('Gagal') ? 'error' : 'success'} onClose={() => setClearMsg(null)}>{clearMsg}</Alert>}
+                {clearMsg && (
+                    <Alert
+                        severity={clearMsg.startsWith('Gagal') ? 'error' : 'success'}
+                        action={
+                            <IconButton size='small' color='inherit' onClick={() => setClearMsg(null)}>
+                                <IconX size={16} />
+                            </IconButton>
+                        }
+                    >
+                        {clearMsg}
+                    </Alert>
+                )}
 
                 {status && (
                     <Stack direction='row' spacing={2} flexWrap='wrap'>
