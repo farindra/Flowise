@@ -27,6 +27,20 @@ import MainCard from '@/ui-component/cards/MainCard'
 
 const API = '/api/v1/sync-status'
 
+const toWIB = (iso) => {
+    if (!iso) return ''
+    try {
+        return new Intl.DateTimeFormat('id-ID', {
+            timeZone: 'Asia/Jakarta',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false
+        }).format(new Date(iso)).replace(/(\d+)\/(\d+)\/(\d+),?/, '$3-$2-$1')
+    } catch {
+        return iso
+    }
+}
+
 const levelColor = { ERROR: 'error', WARN: 'warning', INFO: 'success' }
 const levelIcon = {
     ERROR: <IconAlertCircle size={14} />,
@@ -53,7 +67,7 @@ function LogRow({ row, idx }) {
                 </TableCell>
                 <TableCell sx={{ py: 0.5, whiteSpace: 'nowrap', width: 150 }}>
                     <Typography variant='caption' color='text.disabled' sx={{ fontFamily: 'monospace' }}>
-                        {(row.time || '').replace('T', ' ').replace('Z', '').slice(0, 19)}
+                        {toWIB(row.time)}
                     </Typography>
                 </TableCell>
                 <TableCell sx={{ py: 0.5 }}>
@@ -187,7 +201,7 @@ export default function SyncStatus() {
                                 Container Start
                             </Typography>
                             <Typography variant='body2' sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                                {(status.startedAt || '').replace('T', ' ').replace('Z', '').slice(0, 19)}
+                                {toWIB(status.startedAt)}
                             </Typography>
                         </Paper>
                         {lastSync && (
@@ -202,7 +216,7 @@ export default function SyncStatus() {
                                     sx={{ fontWeight: 700, mb: 0.5 }}
                                 />
                                 <Typography variant='caption' color='text.disabled' display='block'>
-                                    {(lastSync.time || '').replace('T', ' ').replace('Z', '').slice(0, 19)}
+                                    {toWIB(lastSync.time)}
                                 </Typography>
                             </Paper>
                         )}
@@ -230,7 +244,7 @@ export default function SyncStatus() {
                                     <TableRow>
                                         <TableCell sx={{ width: 36 }} />
                                         <TableCell sx={{ width: 70 }}>Level</TableCell>
-                                        <TableCell sx={{ width: 150 }}>Waktu (UTC)</TableCell>
+                                        <TableCell sx={{ width: 150 }}>Waktu (WIB)</TableCell>
                                         <TableCell>Pesan</TableCell>
                                     </TableRow>
                                 </TableHead>
