@@ -167,14 +167,26 @@ func (s *WASession) runQRFlow(ctx context.Context) {
 }
 
 func (s *WASession) PairPhone(ctx context.Context, phone string) (string, error) {
-	select {
-	case <-s.qrReady:
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-time.After(60 * time.Second):
-		return "", fmt.Errorf("timeout waiting for QR channel (start connect first)")
+	if s.waClient.IsLoggedIn() {
+		return "", fmt.Errorf("session sudah terhubung, tidak perlu pair lagi")
 	}
-	return s.waClient.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+
+	pairCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+
+	// If websocket dropped, trigger reconnect once
+	if !s.waClient.IsConnected() {
+		s.waClient.Connect() //nolint
+	}
+
+	for !s.waClient.IsConnected() {
+		select {
+		case <-pairCtx.Done():
+			return "", fmt.Errorf("websocket tidak tersambung — coba Refresh QR dulu")
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	return s.waClient.PairPhone(pairCtx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 }
 
 func (s *WASession) QR() []byte {
@@ -249,6 +261,12 @@ func (s *WASession) handleEvent(rawEvt interface{}) {
 		fmt.Printf("[%s] Connected: +%s\n", s.name, s.phone)
 	case *events.Disconnected:
 		fmt.Printf("[%s] Disconnected\n", s.name)
+		// Clear QR so UI doesn't show stale code after disconnect
+		if !s.waClient.IsLoggedIn() {
+			s.mu.Lock()
+			s.currentQR = nil
+			s.mu.Unlock()
+		}
 	case *events.LoggedOut:
 		fmt.Printf("[%s] LoggedOut — restarting QR flow\n", s.name)
 		s.mu.Lock()

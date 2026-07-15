@@ -73,6 +73,7 @@ const CRMLeads = Loadable(lazy(() => import('@/views/crm-leads')))
 const CRMSalesmen = Loadable(lazy(() => import('@/views/crm-salesmen')))
 const CRMCampaigns = Loadable(lazy(() => import('@/views/crm-campaigns')))
 const IoTMonitor = Loadable(lazy(() => import('@/views/iot-monitor')))
+const SyncStatus = Loadable(lazy(() => import('@/views/sync-status')))
 const TelegramSession = Loadable(lazy(() => import('@/views/telegram-session')))
 
 // ==============================|| MAIN ROUTING ||============================== //
@@ -376,6 +377,10 @@ const MainRoutes = {
         {
             path: '/iot-monitor',
             element: <IoTMonitor />
+        },
+        {
+            path: '/sync-status',
+            element: <SyncStatus />
         },
         {
             path: '/telegram-session',

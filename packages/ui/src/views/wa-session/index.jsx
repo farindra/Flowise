@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import {
     Box,
     Button,
@@ -67,6 +67,7 @@ export default function WASession() {
     const [pairingLoading, setPairingLoading] = useState(false)
     const [pairingError, setPairingError] = useState('')
     const [logoutBusy, setLogoutBusy] = useState({})
+    const qrIntervalRef = useRef(null)
 
     const loadChatflows = useCallback(async () => {
         try {
@@ -88,12 +89,31 @@ export default function WASession() {
         }
     }, [])
 
+    const refreshQR = useCallback(async (id) => {
+        setQrLoading(true)
+        try {
+            const res = await apiClient.get(`${API}/sessions/${id}/qr`, { responseType: 'blob' })
+            setQrImg(URL.createObjectURL(res.data))
+        } catch { setQrImg(null) }
+        finally { setQrLoading(false) }
+    }, [])
+
     useEffect(() => {
         load()
         loadChatflows()
         const t = setInterval(load, 8000)
         return () => clearInterval(t)
     }, [load, loadChatflows])
+
+    // Auto-refresh QR every 12s while connect dialog is open (WA QR expires ~20s)
+    useEffect(() => {
+        if (connectOpen && activeSession) {
+            qrIntervalRef.current = setInterval(() => refreshQR(activeSession.id), 12000)
+        } else {
+            clearInterval(qrIntervalRef.current)
+        }
+        return () => clearInterval(qrIntervalRef.current)
+    }, [connectOpen, activeSession, refreshQR])
 
     const getChatflow = (id) => chatflows.find((c) => c.id === id)
     const getChatflowName = (id) => getChatflow(id)?.name || (id ? '— Belum Terhubung' : '—')
@@ -144,15 +164,6 @@ export default function WASession() {
         setConnectOpen(true)
         try { await apiClient.post(`${API}/sessions/${session.id}/connect`) } catch { /* already connecting */ }
         await refreshQR(session.id)
-    }
-
-    const refreshQR = async (id) => {
-        setQrLoading(true)
-        try {
-            const res = await apiClient.get(`${API}/sessions/${id}/qr`, { responseType: 'blob' })
-            setQrImg(URL.createObjectURL(res.data))
-        } catch { setQrImg(null) }
-        finally { setQrLoading(false) }
     }
 
     const handlePairPhone = async () => {
@@ -411,6 +422,9 @@ export default function WASession() {
                                 onClick={() => activeSession && refreshQR(activeSession.id)}>
                                 Refresh QR
                             </Button>
+                            <Typography variant='caption' color='text.secondary' display='block' mt={0.5}>
+                                Auto-refresh tiap 12 detik
+                            </Typography>
                         </Box>
 
                         <Divider orientation='vertical' flexItem sx={{ display: { xs: 'none', sm: 'block' } }} />

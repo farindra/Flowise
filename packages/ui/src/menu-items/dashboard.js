@@ -29,7 +29,8 @@ import {
     IconSearch,
     IconBrandTelegram,
     IconDeviceDesktopAnalytics,
-    IconSpeakerphone
+    IconSpeakerphone,
+    IconRefresh
 } from '@tabler/icons-react'
 
 // constant
@@ -63,7 +64,8 @@ const icons = {
     IconSearch,
     IconBrandTelegram,
     IconDeviceDesktopAnalytics,
-    IconSpeakerphone
+    IconSpeakerphone,
+    IconRefresh
 }
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
@@ -377,6 +379,14 @@ const dashboard = {
                     type: 'item',
                     url: '/iot-monitor',
                     icon: icons.IconDeviceDesktopAnalytics,
+                    breadcrumbs: true
+                },
+                {
+                    id: 'sync-status',
+                    title: 'Sync Status',
+                    type: 'item',
+                    url: '/sync-status',
+                    icon: icons.IconRefresh,
                     breadcrumbs: true
                 }
             ]
