@@ -6,6 +6,11 @@ import {
     Chip,
     CircularProgress,
     Collapse,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogContentText,
+    DialogTitle,
     IconButton,
     Paper,
     Stack,
@@ -17,7 +22,7 @@ import {
     TableRow,
     Typography
 } from '@mui/material'
-import { IconChevronDown, IconChevronUp, IconRefresh, IconAlertCircle, IconInfoCircle, IconAlertTriangle } from '@tabler/icons-react'
+import { IconChevronDown, IconChevronUp, IconRefresh, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
 import MainCard from '@/ui-component/cards/MainCard'
 
 const API = '/api/v1/sync-status'
@@ -76,7 +81,10 @@ export default function SyncStatus() {
     const [status, setStatus] = useState(null)
     const [logs, setLogs] = useState(null)
     const [loading, setLoading] = useState(false)
+    const [clearing, setClearing] = useState(false)
     const [error, setError] = useState(null)
+    const [clearOpen, setClearOpen] = useState(false)
+    const [clearMsg, setClearMsg] = useState(null)
 
     const fetchAll = async () => {
         setLoading(true)
@@ -96,27 +104,67 @@ export default function SyncStatus() {
         }
     }
 
+    const clearLogs = async () => {
+        setClearOpen(false)
+        setClearing(true)
+        setClearMsg(null)
+        try {
+            const res = await fetch(`${API}/clear-logs`, { method: 'POST' })
+            const data = await res.json()
+            if (data.error) throw new Error(data.error)
+            setLogs(null)
+            setClearMsg('Log berhasil dihapus')
+        } catch (e) {
+            setClearMsg('Gagal hapus log: ' + e.message)
+        } finally {
+            setClearing(false)
+        }
+    }
+
     const lastSync = logs?.logs?.find((l) => l.message.includes('sync completed') || l.message.includes('sync failed'))
     const hasError = logs?.logs?.some((l) => l.level === 'ERROR')
 
     return (
         <MainCard title='Sync Status — Meilisearch'>
             <Stack spacing={2}>
-                <Stack direction='row' spacing={1.5} alignItems='center'>
+                <Stack direction='row' spacing={1.5} alignItems='center' flexWrap='wrap'>
                     <Button
                         variant='contained'
                         onClick={fetchAll}
-                        disabled={loading}
+                        disabled={loading || clearing}
                         startIcon={loading ? <CircularProgress size={14} color='inherit' /> : <IconRefresh size={16} />}
                     >
                         {loading ? 'Memuat...' : 'Cek Status'}
                     </Button>
+                    <Button
+                        variant='outlined'
+                        color='error'
+                        onClick={() => setClearOpen(true)}
+                        disabled={loading || clearing}
+                        startIcon={clearing ? <CircularProgress size={14} color='inherit' /> : <IconTrash size={16} />}
+                    >
+                        {clearing ? 'Menghapus...' : 'Hapus Log'}
+                    </Button>
                     <Typography variant='caption' color='text.disabled'>
-                        Klik untuk melihat log terbaru sync-indexer → Meilisearch (interval 30 menit)
+                        Log ditampilkan 7 hari terakhir, interval sync 30 menit
                     </Typography>
                 </Stack>
 
+                <Dialog open={clearOpen} onClose={() => setClearOpen(false)}>
+                    <DialogTitle>Hapus Log Sync-Indexer?</DialogTitle>
+                    <DialogContent>
+                        <DialogContentText>
+                            Semua log container ob-sync-indexer akan dihapus permanen. Lanjutkan?
+                        </DialogContentText>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={() => setClearOpen(false)}>Batal</Button>
+                        <Button onClick={clearLogs} color='error' variant='contained'>Hapus</Button>
+                    </DialogActions>
+                </Dialog>
+
                 {error && <Alert severity='error'>{error}</Alert>}
+                {clearMsg && <Alert severity={clearMsg.startsWith('Gagal') ? 'error' : 'success'} onClose={() => setClearMsg(null)}>{clearMsg}</Alert>}
 
                 {status && (
                     <Stack direction='row' spacing={2} flexWrap='wrap'>
