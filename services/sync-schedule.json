@@ -1,0 +1,33 @@
+{
+  "ob-sync-indexer": {
+    "mode": "hours",
+    "intervalMinutes": 720,
+    "hours": [
+      18,
+      19
+    ],
+    "enabled": false
+  },
+  "go-index": {
+    "mode": "interval",
+    "intervalMinutes": 10,
+    "hours": [],
+    "enabled": false
+  },
+  "go-jurnal-sync": {
+    "mode": "hours",
+    "intervalMinutes": 720,
+    "hours": [
+      19
+    ],
+    "enabled": true
+  },
+  "go-jurnal-sync-sbb": {
+    "mode": "hours",
+    "intervalMinutes": 720,
+    "hours": [
+      19
+    ],
+    "enabled": true
+  }
+}
