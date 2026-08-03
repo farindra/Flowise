@@ -17,6 +17,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -99,13 +100,19 @@ func (s *WASession) Connect(ctx context.Context) {
 			s.mu.Lock()
 			s.phone = s.waClient.Store.ID.User
 			s.mu.Unlock()
+			return
 		}
-		return
+		// Stored session expired/rejected — clear credentials and fall through to QR flow.
+		s.waClient.Disconnect()
+		if delErr := s.waClient.Store.Delete(ctx); delErr != nil {
+			fmt.Printf("[%s] failed to delete stale store: %v\n", s.name, delErr)
+		}
 	}
 	go s.runQRFlow(ctx)
 }
 
 func (s *WASession) runQRFlow(ctx context.Context) {
+	store.SetOSInfo(s.name, [3]uint32{10, 0, 0})
 	for {
 		// Each outer iteration owns its own signal channel to avoid double-close
 		// panic when multiple goroutines race through runQRFlow concurrently.
