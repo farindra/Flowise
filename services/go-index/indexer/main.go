@@ -139,8 +139,8 @@ func main() {
 		fmt.Fprint(w, `{"status":"reindex started"}`)
 	})
 	go func() {
-		log.Println("indexer HTTP listening on :8082")
-		if err := http.ListenAndServe(":8082", mux); err != nil { log.Printf("indexer HTTP stopped: %v", err) }
+		log.Println("indexer HTTP listening on :8092")
+		if err := http.ListenAndServe(":8092", mux); err != nil { log.Printf("indexer HTTP stopped: %v", err) }
 	}()
 
 	// Run indexing pertama kali

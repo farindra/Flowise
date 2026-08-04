@@ -5,6 +5,12 @@ module.exports = {
             script: './start.sh',
             cwd: '/www/wwwroot/agentic.oceanbearings.co.id/services/go-jurnal-sync',
             interpreter: 'bash'
+        },
+        {
+            name: 'go-jurnal-sync-sbb',
+            script: './start-sbb.sh',
+            cwd: '/www/wwwroot/agentic.oceanbearings.co.id/services/go-jurnal-sync',
+            interpreter: 'bash'
         }
     ]
 }

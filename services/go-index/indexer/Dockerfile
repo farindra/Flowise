@@ -9,5 +9,5 @@ FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/indexer .
-EXPOSE 8082
+EXPOSE 8092
 CMD ["./indexer"]
