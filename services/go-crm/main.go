@@ -5,6 +5,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+
+	// Embed the timezone database: the binary is deployed standalone via
+	// start.sh, and broadcast scheduling depends on Asia/Jakarta resolving.
+	_ "time/tzdata"
 )
 
 func envOr(key, def string) string {
@@ -24,8 +29,18 @@ func main() {
 		log.Fatalf("db migrate: %v", err)
 	}
 
+	startImportJobJanitor()
+
+	initThrottleDefaults()
+	startBroadcastWorker()
+
 	internalKey := envOr("INTERNAL_API_KEY", "")
 	port := envOr("PORT", "8083")
+
+	if v, err := strconv.ParseFloat(envOr("DEFAULT_MARKUP_PERCENT", "23"), 64); err == nil {
+		defaultMarkupPercent = v
+	}
+	log.Printf("default markup for unregistered customers: %.2f%%", defaultMarkupPercent)
 
 	mux := http.NewServeMux()
 
@@ -59,6 +74,49 @@ func main() {
 	mux.HandleFunc("GET /api/salesmen/{id}", apiAuth(internalKey, handleGetSalesman))
 	mux.HandleFunc("PUT /api/salesmen/{id}", apiAuth(internalKey, handleUpdateSalesman))
 	mux.HandleFunc("DELETE /api/salesmen/{id}", apiAuth(internalKey, handleDeleteSalesman))
+
+	// Customers (VIP / Blacklist)
+	mux.HandleFunc("GET /api/customers/tier", apiAuth(internalKey, handleCustomerTier))
+	mux.HandleFunc("GET /api/customers/wilayah", apiAuth(internalKey, handleCustomerWilayah))
+	mux.HandleFunc("GET /api/customers/template", apiAuth(internalKey, handleCustomerTemplate))
+	mux.HandleFunc("GET /api/customers/export", apiAuth(internalKey, handleCustomerExport))
+	mux.HandleFunc("POST /api/customers/import", apiAuth(internalKey, handleCustomerImport))
+	mux.HandleFunc("GET /api/customers/import/{jobId}", apiAuth(internalKey, handleCustomerImportStatus))
+	mux.HandleFunc("GET /api/customers", apiAuth(internalKey, handleListCustomers))
+	mux.HandleFunc("POST /api/customers", apiAuth(internalKey, handleCreateCustomer))
+	mux.HandleFunc("GET /api/customers/{id}", apiAuth(internalKey, handleGetCustomer))
+	mux.HandleFunc("PUT /api/customers/{id}", apiAuth(internalKey, handleUpdateCustomer))
+	mux.HandleFunc("DELETE /api/customers/{id}", apiAuth(internalKey, handleDeleteCustomer))
+
+	// Broadcast — literal paths first so they aren't swallowed by /{id}
+	mux.HandleFunc("GET /api/broadcasts/throttle-defaults", apiAuth(internalKey, handleBroadcastThrottleDefaults))
+	mux.HandleFunc("GET /api/broadcasts/senders", apiAuth(internalKey, handleBroadcastSenders))
+	mux.HandleFunc("GET /api/broadcasts/chat-sources", apiAuth(internalKey, handleBroadcastChatSources))
+	mux.HandleFunc("GET /api/broadcasts/template", apiAuth(internalKey, handleBroadcastTemplate))
+	mux.HandleFunc("GET /api/broadcasts/optouts", apiAuth(internalKey, handleListOptOuts))
+	mux.HandleFunc("POST /api/broadcasts/optouts", apiAuth(internalKey, handleCreateOptOut))
+	mux.HandleFunc("DELETE /api/broadcasts/optouts/{phone}", apiAuth(internalKey, handleDeleteOptOut))
+	mux.HandleFunc("POST /api/broadcasts/preview-audience", apiAuth(internalKey, handlePreviewAudience))
+	mux.HandleFunc("POST /api/broadcasts/audience-file", apiAuth(internalKey, handleAudienceFile))
+	// Media lives on its own prefix: /api/broadcasts/media/{name} would be
+	// ambiguous against /api/broadcasts/{id}/recipients (Go 1.22 mux rejects it).
+	mux.HandleFunc("POST /api/broadcast-media", apiAuth(internalKey, handleBroadcastMediaUpload))
+	mux.HandleFunc("GET /api/broadcast-media/{name}", apiAuth(internalKey, handleBroadcastMediaGet))
+	mux.HandleFunc("GET /api/broadcasts", apiAuth(internalKey, handleListBroadcasts))
+	mux.HandleFunc("POST /api/broadcasts", apiAuth(internalKey, handleCreateBroadcast))
+	mux.HandleFunc("GET /api/broadcasts/{id}", apiAuth(internalKey, handleGetBroadcast))
+	mux.HandleFunc("PUT /api/broadcasts/{id}", apiAuth(internalKey, handleUpdateBroadcast))
+	mux.HandleFunc("DELETE /api/broadcasts/{id}", apiAuth(internalKey, handleDeleteBroadcast))
+	mux.HandleFunc("POST /api/broadcasts/{id}/audience", apiAuth(internalKey, handleBuildAudience))
+	mux.HandleFunc("GET /api/broadcasts/{id}/audience/{jobId}", apiAuth(internalKey, handleBuildAudienceStatus))
+	mux.HandleFunc("GET /api/broadcasts/{id}/recipients", apiAuth(internalKey, handleListBroadcastRecipients))
+	mux.HandleFunc("GET /api/broadcasts/{id}/export", apiAuth(internalKey, handleExportBroadcastRecipients))
+	mux.HandleFunc("POST /api/broadcasts/{id}/test-send", apiAuth(internalKey, handleBroadcastTestSend))
+	mux.HandleFunc("POST /api/broadcasts/{id}/start", apiAuth(internalKey, handleStartBroadcast))
+	mux.HandleFunc("POST /api/broadcasts/{id}/pause", apiAuth(internalKey, handlePauseBroadcast))
+	mux.HandleFunc("POST /api/broadcasts/{id}/resume", apiAuth(internalKey, handleResumeBroadcast))
+	mux.HandleFunc("POST /api/broadcasts/{id}/cancel", apiAuth(internalKey, handleCancelBroadcast))
+	mux.HandleFunc("POST /api/broadcasts/{id}/retry", apiAuth(internalKey, handleRetryBroadcast))
 
 	// Campaigns (internal CRUD)
 	mux.HandleFunc("GET /api/campaigns/check-slug", apiAuth(internalKey, handleCheckSlug))

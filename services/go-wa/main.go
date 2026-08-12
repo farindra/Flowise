@@ -32,6 +32,8 @@ func main() {
 	port := envOr("PORT", "8082")
 	timeoutSec := parseTimeoutSec(envOr("FLOWISE_TIMEOUT", "120"))
 
+	initMediaLimits()
+
 	mgr := NewSessionManager(flowiseBaseURL, flowiseAPIKey, dataDir, time.Duration(timeoutSec)*time.Second)
 
 	if err := mgr.LoadAll(ctx); err != nil {
@@ -53,6 +55,8 @@ func main() {
 	mux.HandleFunc("POST /api/sessions/{id}/logout", apiAuth(internalKey, handleSessionLogout(mgr)))
 	mux.HandleFunc("POST /api/sessions/{id}/pair-phone", apiAuth(internalKey, handleSessionPairPhone(mgr)))
 	mux.HandleFunc("POST /api/sessions/{id}/send", apiAuth(internalKey, handleSessionSend(mgr)))
+	mux.HandleFunc("POST /api/sessions/{id}/send-media", apiAuth(internalKey, handleSessionSendMedia(mgr)))
+	mux.HandleFunc("POST /api/sessions/{id}/resolve-lids", apiAuth(internalKey, handleSessionResolveLIDs(mgr)))
 
 	// Internal: send outbound WA message (used by Flowise checkout_to_cs / hubungi_admin_wa tools)
 	mux.HandleFunc("POST /internal/send", apiAuth(internalKey, handleSendMessage(mgr)))

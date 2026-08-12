@@ -51,6 +51,9 @@ func main() {
 	productH     := product.NewHandler(productSearchURL)
 	logH         := logviewer.NewHandler(errorLogPath, flowiseLogsDir)
 
+	// ── Periodic log pruning — keep only the last 50 lines/entries ────────────
+	logviewer.StartPruner(errorLogPath, flowiseLogsDir, 50, 10*time.Minute)
+
 	// ── Initial customer sync ──────────────────────────────────────────────────
 	go func() {
 		if err := meiliSyncer.SyncCustomers(context.Background(), jurnalURL, jurnalToken); err != nil {

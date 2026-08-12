@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 type Handler struct {
@@ -38,46 +37,48 @@ func (h *Handler) HandleUI(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, logUI)
 }
 
-// HandleSearch returns matching log entries as JSON.
+const recentLimit = 50
+const searchLimit = 200
+
+// HandleSearch returns matching log entries as JSON. No date filter — a `q`
+// (error code or keyword) narrows the search across all available log files;
+// an empty `q` returns the most recent entries instead.
 func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	q := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("q")))
-	date := r.URL.Query().Get("date") // YYYY-MM-DD, empty = today
-	if date == "" {
-		date = time.Now().UTC().Format("2006-01-02")
-	}
-
-	if q == "" {
-		json.NewEncoder(w).Encode(map[string]any{"error": "parameter q kosong"})
-		return
-	}
 
 	var results []LogEntry
 
-	// 1. Search salesman error.log
-	results = append(results, h.searchFile(h.salesmanlLogPath, q, date, "salesman-service")...)
+	// 1. Salesman error.log
+	results = append(results, h.searchFile(h.salesmanlLogPath, q, "salesman-service")...)
 
-	// 2. Search Flowise server logs
+	// 2. Flowise server logs (all hourly-rotated files, most recent first)
 	if h.flowiseLogsDir != "" {
-		pattern := filepath.Join(h.flowiseLogsDir, "server.log."+date+"*")
-		matches, _ := filepath.Glob(pattern)
-		sort.Strings(matches)
+		matches, _ := filepath.Glob(filepath.Join(h.flowiseLogsDir, "server.log.*"))
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
 		for _, f := range matches {
-			results = append(results, h.searchFile(f, q, date, "flowise-server")...)
+			results = append(results, h.searchFile(f, q, "flowise-server")...)
+			// In recent mode (no q), stop once we have plenty to sort/trim from —
+			// no need to read every hourly file when only the newest 50 are shown.
+			if q == "" && len(results) >= recentLimit*3 {
+				break
+			}
 		}
 
-		// Also search audit logs (JSONL)
-		auditPattern := filepath.Join(h.flowiseLogsDir, "audit-"+date+"*.log.jsonl")
-		auditMatches, _ := filepath.Glob(auditPattern)
-		sort.Strings(auditMatches)
+		// Audit logs (JSONL)
+		auditMatches, _ := filepath.Glob(filepath.Join(h.flowiseLogsDir, "audit-*.log.jsonl"))
+		sort.Sort(sort.Reverse(sort.StringSlice(auditMatches)))
 		for _, f := range auditMatches {
 			results = append(results, h.searchAuditFile(f, q)...)
+			if q == "" && len(results) >= recentLimit*3 {
+				break
+			}
 		}
 
-		// 3. Search go-telegram error log
+		// 3. go-telegram error log
 		gtLog := filepath.Join(h.flowiseLogsDir, "go-telegram-error.log")
-		results = append(results, h.searchFile(gtLog, q, date, "go-telegram")...)
+		results = append(results, h.searchFile(gtLog, q, "go-telegram")...)
 	}
 
 	// Sort by time desc
@@ -85,15 +86,24 @@ func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return results[i].Time > results[j].Time
 	})
 
+	limit := searchLimit
+	if q == "" {
+		limit = recentLimit
+	}
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
 	json.NewEncoder(w).Encode(map[string]any{
 		"query":   q,
-		"date":    date,
 		"total":   len(results),
 		"results": results,
 	})
 }
 
-func (h *Handler) searchFile(path, q, date, source string) []LogEntry {
+// searchFile returns lines matching q (case-insensitive), or every line when
+// q is empty.
+func (h *Handler) searchFile(path, q, source string) []LogEntry {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -105,7 +115,7 @@ func (h *Handler) searchFile(path, q, date, source string) []LogEntry {
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.Contains(strings.ToUpper(line), q) {
+		if q != "" && !strings.Contains(strings.ToUpper(line), q) {
 			continue
 		}
 		entry := parseLine(line, source)
@@ -126,7 +136,7 @@ func (h *Handler) searchAuditFile(path, q string) []LogEntry {
 	scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.Contains(strings.ToUpper(line), q) {
+		if q != "" && !strings.Contains(strings.ToUpper(line), q) {
 			continue
 		}
 		var obj map[string]any
@@ -150,6 +160,24 @@ func (h *Handler) searchAuditFile(path, q string) []LogEntry {
 
 func parseLine(line, source string) LogEntry {
 	entry := LogEntry{Source: source, Message: line, Level: "INFO"}
+
+	// Flowise/winston log format: "2026-08-04 21:00:27 [INFO]: message"
+	// Detected by YYYY-MM-DD HH:MM:SS prefix (dashes, not slashes)
+	if len(line) >= 20 && line[4] == '-' && line[7] == '-' && line[10] == ' ' && line[13] == ':' && line[16] == ':' && line[19] == ' ' {
+		entry.Time = line[:10] + "T" + line[11:19]
+		rest := strings.TrimSpace(line[19:])
+		if strings.HasPrefix(rest, "[") {
+			if j := strings.Index(rest, "]"); j > 0 {
+				level := strings.ToUpper(rest[1:j])
+				if level == "INFO" || level == "WARN" || level == "ERROR" {
+					entry.Level = level
+				}
+				rest = strings.TrimSpace(strings.TrimPrefix(rest[j+1:], ":"))
+			}
+		}
+		entry.Message = rest
+		return entry
+	}
 
 	// Go log format: "2006/01/02 15:04:05 [BotName] [ERRCODE] error ..."
 	// Detected by YYYY/MM/DD HH:MM:SS prefix
@@ -253,17 +281,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 <div class="search-box">
   <div class="search-row">
-    <input id="q" type="text" placeholder="Cari error code (misal: A3K9M) atau keyword..." autocomplete="off" autofocus>
-    <input id="date" type="date" value="">
+    <input id="q" type="text" placeholder="Cari error code (misal: A3K9M) atau keyword... (kosongkan untuk 50 log terakhir)" autocomplete="off" autofocus>
     <button class="btn" id="btn" onclick="search()">Cari</button>
   </div>
-  <p class="hint">Cari by error code 5 huruf, pesan error, atau keyword lain. Tekan Enter untuk cari.</p>
+  <p class="hint">Cari by error code 5 huruf atau keyword lain. Kosongkan untuk lihat 50 log terakhir. Tekan Enter untuk cari.</p>
 </div>
 <div class="results" id="results"></div>
 
 <script>
-document.getElementById('date').value = new Date().toISOString().slice(0,10);
-
 document.getElementById('q').addEventListener('keydown', e => {
   if (e.key === 'Enter') search();
   // auto-uppercase
@@ -272,8 +297,6 @@ document.getElementById('q').addEventListener('keydown', e => {
 
 async function search() {
   const q = document.getElementById('q').value.trim();
-  const date = document.getElementById('date').value;
-  if (!q) { alert('Isi keyword atau error code dulu'); return; }
 
   const btn = document.getElementById('btn');
   const out = document.getElementById('results');
@@ -282,14 +305,15 @@ async function search() {
   out.innerHTML = '';
 
   try {
-    const res = await fetch('/logs/search?q=' + encodeURIComponent(q) + '&date=' + date);
+    const res = await fetch('/logs/search?q=' + encodeURIComponent(q));
     const data = await res.json();
     if (data.error) { out.innerHTML = '<div class="empty">❌ ' + data.error + '</div>'; return; }
     if (!data.results || data.results.length === 0) {
-      out.innerHTML = '<div class="empty">Tidak ada hasil untuk <b>' + q + '</b> pada ' + date + '</div>';
+      out.innerHTML = '<div class="empty">Tidak ada hasil' + (q ? ' untuk <b>' + q + '</b>' : '') + '</div>';
       return;
     }
-    out.innerHTML = '<div class="meta">' + data.total + ' hasil untuk "' + data.query + '" — ' + data.date + '</div>' +
+    const label = q ? ('hasil untuk "' + data.query + '"') : '50 log terakhir';
+    out.innerHTML = '<div class="meta">' + data.total + ' ' + label + '</div>' +
       data.results.map((r, i) => renderEntry(r, i)).join('');
   } catch(e) {
     out.innerHTML = '<div class="empty">❌ Gagal fetch: ' + e.message + '</div>';
@@ -298,6 +322,8 @@ async function search() {
     btn.textContent = 'Cari';
   }
 }
+
+search();
 
 function renderEntry(r, i) {
   const code = r.code ? '<span class="badge-code">' + r.code + '</span>' : '';

@@ -3,7 +3,7 @@ module.exports = {
         {
             name: 'go-wa',
             script: './start.sh',
-            cwd: '/root/App/alazhar-agentic/services/go-wa',
+            cwd: '/www/wwwroot/agentic.oceanbearings.co.id/services/go-wa',
             interpreter: 'bash'
         }
     ]

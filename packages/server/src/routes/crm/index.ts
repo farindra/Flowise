@@ -17,7 +17,10 @@ function proxyToCRM(path: string, method: string, req: express.Request, res: exp
     }
 
     const proxyReq = http.request(options, (proxyRes) => {
-        res.setHeader('Content-Type', 'application/json')
+        const contentType = proxyRes.headers['content-type']
+        res.setHeader('Content-Type', contentType || 'application/json')
+        const contentDisposition = proxyRes.headers['content-disposition']
+        if (contentDisposition) res.setHeader('Content-Disposition', contentDisposition)
         res.status(proxyRes.statusCode || 200)
         proxyRes.pipe(res)
     })
@@ -56,6 +59,51 @@ router.put('/salesmen/:id', (req, res) => {
     proxyToCRM(`/api/salesmen/${req.params.id}`, 'PUT', req, res, body)
 })
 router.delete('/salesmen/:id', (req, res) => proxyToCRM(`/api/salesmen/${req.params.id}`, 'DELETE', req, res))
+
+// Customers (VIP / Blacklist)
+router.get('/customers', (req, res) => {
+    const qs = new URLSearchParams(req.query as Record<string, string>).toString()
+    proxyToCRM(`/api/customers${qs ? '?' + qs : ''}`, 'GET', req, res)
+})
+router.post('/customers', (req, res) => {
+    const body = JSON.stringify(req.body)
+    proxyToCRM('/api/customers', 'POST', req, res, body)
+})
+router.get('/customers/template', (req, res) => proxyToCRM('/api/customers/template', 'GET', req, res))
+router.get('/customers/export', (req, res) => {
+    const qs = new URLSearchParams(req.query as Record<string, string>).toString()
+    proxyToCRM(`/api/customers/export${qs ? '?' + qs : ''}`, 'GET', req, res)
+})
+router.post('/customers/import', (req, res) => {
+    // Multipart file upload — pipe the raw request straight through instead
+    // of the JSON-oriented proxyToCRM helper, preserving the original
+    // Content-Type (with its multipart boundary) and Content-Length.
+    const options = {
+        hostname: '127.0.0.1',
+        port: 8083,
+        path: '/api/customers/import',
+        method: 'POST',
+        headers: {
+            'X-Internal-Key': 'ob-crm-internal-2026',
+            'Content-Type': req.headers['content-type'] || '',
+            'Content-Length': req.headers['content-length'] || ''
+        }
+    }
+    const proxyReq = http.request(options, (proxyRes) => {
+        res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/json')
+        res.status(proxyRes.statusCode || 200)
+        proxyRes.pipe(res)
+    })
+    proxyReq.on('error', (e) => res.status(503).json({ error: 'CRM unavailable: ' + e.message }))
+    req.pipe(proxyReq)
+})
+router.get('/customers/import/:jobId', (req, res) => proxyToCRM(`/api/customers/import/${req.params.jobId}`, 'GET', req, res))
+router.get('/customers/:id', (req, res) => proxyToCRM(`/api/customers/${req.params.id}`, 'GET', req, res))
+router.put('/customers/:id', (req, res) => {
+    const body = JSON.stringify(req.body)
+    proxyToCRM(`/api/customers/${req.params.id}`, 'PUT', req, res, body)
+})
+router.delete('/customers/:id', (req, res) => proxyToCRM(`/api/customers/${req.params.id}`, 'DELETE', req, res))
 
 // Campaigns (internal CRUD)
 router.get('/campaigns/check-slug', (req, res) => {

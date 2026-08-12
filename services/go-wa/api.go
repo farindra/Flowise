@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -254,11 +256,94 @@ func handleSessionSend(mgr *SessionManager) http.HandlerFunc {
 			jsonErr(w, 400, "phone and message are required")
 			return
 		}
-		if err := s.SendMessage(r.Context(), body.Phone, body.Message); err != nil {
+		msgID, err := s.SendMessage(r.Context(), body.Phone, body.Message)
+		if err != nil {
 			jsonErr(w, 500, err.Error())
 			return
 		}
-		jsonOK(w, map[string]string{"status": "sent"})
+		jsonOK(w, map[string]string{"status": "sent", "message_id": msgID})
+	}
+}
+
+// POST /api/sessions/{id}/send-media — multipart: file, phone, caption
+func handleSessionSendMedia(mgr *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s := mgr.Get(r.PathValue("id"))
+		if s == nil {
+			jsonErr(w, 404, "session not found")
+			return
+		}
+		// Allow one extra MB of slack for the multipart envelope itself.
+		if err := r.ParseMultipartForm(int64(maxMediaBytes) + (1 << 20)); err != nil {
+			jsonErr(w, 400, "invalid multipart form: "+err.Error())
+			return
+		}
+		phone := strings.TrimSpace(r.FormValue("phone"))
+		if phone == "" {
+			jsonErr(w, 400, "phone is required")
+			return
+		}
+		file, hdr, err := r.FormFile("file")
+		if err != nil {
+			jsonErr(w, 400, "file is required")
+			return
+		}
+		defer file.Close()
+		if hdr.Size > int64(maxMediaBytes) {
+			jsonErr(w, 400, fmt.Sprintf("file terlalu besar (maks %d MB)", maxMediaBytes>>20))
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(file, int64(maxMediaBytes)+1))
+		if err != nil {
+			jsonErr(w, 400, "gagal baca file: "+err.Error())
+			return
+		}
+		if len(data) > maxMediaBytes {
+			jsonErr(w, 400, fmt.Sprintf("file terlalu besar (maks %d MB)", maxMediaBytes>>20))
+			return
+		}
+		// Trust the bytes over the declared type: multipart writers commonly
+		// label every part application/octet-stream, and a wrong label should
+		// not block an image that is genuinely fine.
+		mime := hdr.Header.Get("Content-Type")
+		if mime == "" || mime == "application/octet-stream" {
+			mime = http.DetectContentType(data)
+		}
+		if !allowedImageMimes[mime] {
+			jsonErr(w, 400, "tipe file tidak didukung: "+mime+" (hanya jpeg, png, webp)")
+			return
+		}
+
+		msgID, err := s.SendImage(r.Context(), phone, data, mime, r.FormValue("caption"))
+		if err != nil {
+			jsonErr(w, 500, err.Error())
+			return
+		}
+		jsonOK(w, map[string]string{"status": "sent", "message_id": msgID})
+	}
+}
+
+// POST /api/sessions/{id}/resolve-lids — {"ids":[...]}
+func handleSessionResolveLIDs(mgr *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s := mgr.Get(r.PathValue("id"))
+		if s == nil {
+			jsonErr(w, 404, "session not found")
+			return
+		}
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, 400, "invalid JSON")
+			return
+		}
+		resolved, passthrough, unresolved := s.ResolveLIDs(r.Context(), body.IDs)
+		jsonOK(w, map[string]any{
+			"resolved":    resolved,
+			"passthrough": passthrough,
+			"unresolved":  unresolved,
+		})
 	}
 }
 

@@ -29,6 +29,7 @@ import logsRouter from './log'
 import logSearchRouter from './log-search'
 import syncStatusRouter from './sync-status'
 import crmRouter from './crm'
+import crmBroadcastRouter from './crm-broadcast'
 import iotRouter from './iot'
 import marketplacesRouter from './marketplaces'
 import mcpEndpointRouter from './mcp-endpoint'
@@ -155,6 +156,9 @@ router.use('/logs', IdentityManager.checkFeatureByPlan('feat:logs'), logsRouter)
 router.use('/log-search', logSearchRouter)
 router.use('/sync-status', syncStatusRouter)
 router.use('/crm', crmRouter)
+// Sibling of /crm on purpose — /api/v1/crm/ is whitelisted (unauthenticated),
+// and broadcast must NOT inherit that bypass. See routes/crm-broadcast/index.ts.
+router.use('/crm-broadcast', crmBroadcastRouter)
 router.use('/iot', iotRouter)
 // router.use('/files', IdentityManager.checkFeatureByPlan('feat:files'), filesRouter)
 

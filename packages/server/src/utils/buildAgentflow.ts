@@ -1137,7 +1137,8 @@ const executeNode = async ({
             apiMessageId,
             chatHistory,
             runtimeChatHistoryLength: Math.max(0, runtimeChatHistory.length - 1),
-            state: updatedState
+            state: updatedState,
+            hasImage: (incomingInput.uploads?.length ?? 0) > 0 ? 'true' : 'false'
         }
         if (
             iterationContext &&

@@ -3,7 +3,7 @@ module.exports = {
         {
             name: 'go-iot',
             script: './start.sh',
-            cwd: '/root/App/alazhar-agentic/services/go-iot',
+            cwd: '/www/wwwroot/agentic.oceanbearings.co.id/services/go-iot',
             interpreter: 'bash'
         }
     ]

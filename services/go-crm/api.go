@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -741,4 +743,203 @@ func slugify(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// ── Customers (VIP / Blacklist) ─────────────────────────────────────────────
+
+func normPhone(p string) string {
+	p = strings.TrimSpace(p)
+	p = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "", ".", "", "+", "").Replace(p)
+	switch {
+	case strings.HasPrefix(p, "0"):
+		p = "62" + p[1:]
+	case strings.HasPrefix(p, "8"):
+		// Bare Indonesian mobile number typed without any prefix.
+		p = "62" + p
+	}
+	return p
+}
+
+// reValidWA matches a number that can actually receive a WhatsApp message.
+// Deliberately stricter than normPhone: normPhone tidies input for storage,
+// this gates who a broadcast is allowed to contact (landlines from Jurnal, for
+// example, normalize cleanly but are not reachable).
+var reValidWA = regexp.MustCompile(`^62[0-9]{8,13}$`)
+
+func validWAPhone(p string) bool { return reValidWA.MatchString(p) }
+
+func splitPhones(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range strings.Split(raw, ",") {
+		p = normPhone(p)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func handleListCustomers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	tier := r.URL.Query().Get("tier")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	customers, total, err := dbListCustomers(r.Context(), q, tier, page, limit)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if customers == nil {
+		customers = []Customer{}
+	}
+	jsonOK(w, map[string]any{
+		"items": customers,
+		"total": total,
+		"page":  page,
+		"limit": limit,
+	})
+}
+
+func handleGetCustomer(w http.ResponseWriter, r *http.Request) {
+	c, err := dbGetCustomer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	jsonOK(w, c)
+}
+
+// customerInput mirrors Customer but accepts phone as either a comma-separated
+// string (from the admin UI form) or an array (from API clients).
+type customerInput struct {
+	Name    string          `json:"name"`
+	Phone   json.RawMessage `json:"phone"`
+	Wilayah string          `json:"wilayah"`
+	Tier    string          `json:"tier"`
+	Adj     float64         `json:"adj"`
+	Notes   string          `json:"notes"`
+}
+
+func (in customerInput) phones() []string {
+	var asArray []string
+	if err := json.Unmarshal(in.Phone, &asArray); err == nil {
+		out := make([]string, 0, len(asArray))
+		seen := map[string]bool{}
+		for _, p := range asArray {
+			if n := normPhone(p); n != "" && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	var asString string
+	if err := json.Unmarshal(in.Phone, &asString); err == nil {
+		return splitPhones(asString)
+	}
+	return nil
+}
+
+func handleCreateCustomer(w http.ResponseWriter, r *http.Request) {
+	var body customerInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if body.Name == "" {
+		jsonError(w, "name required", http.StatusBadRequest)
+		return
+	}
+	if body.Tier == "" {
+		body.Tier = "normal"
+	}
+	c := &Customer{Name: body.Name, Phone: body.phones(), Wilayah: body.Wilayah, Tier: body.Tier, Adj: body.Adj, Notes: body.Notes}
+	id, err := dbCreateCustomer(r.Context(), c)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	jsonOK(w, map[string]string{"id": id})
+}
+
+func handleUpdateCustomer(w http.ResponseWriter, r *http.Request) {
+	existing, err := dbGetCustomer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	var body customerInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if body.Name != "" {
+		existing.Name = body.Name
+	}
+	if phones := body.phones(); phones != nil {
+		existing.Phone = phones
+	}
+	existing.Wilayah = body.Wilayah
+	if body.Tier != "" {
+		existing.Tier = body.Tier
+	}
+	existing.Adj = body.Adj
+	existing.Notes = body.Notes
+	if err := dbUpdateCustomer(r.Context(), existing); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]string{"status": "updated"})
+}
+
+func handleDeleteCustomer(w http.ResponseWriter, r *http.Request) {
+	if err := dbDeleteCustomer(r.Context(), r.PathValue("id")); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]string{"status": "deleted"})
+}
+
+// defaultMarkupPercent is applied as "adj" for any phone number that isn't
+// registered as VIP or Blacklist. Configurable via DEFAULT_MARKUP_PERCENT env
+// var (set in main.go), defaults to 23 (i.e. +23% over base price).
+var defaultMarkupPercent float64 = 23
+
+// handleCustomerTier — used by the Flowise "customer_tier_lookup" tool.
+// Always returns 200 with tier "normal" when the phone isn't known, so the
+// agent never has to special-case a 404. Unregistered numbers get
+// defaultMarkupPercent as adj instead of 0, per business rule: only
+// VIP/Blacklist-registered customers get a custom rate, everyone else pays
+// the standard markup.
+func handleCustomerTier(w http.ResponseWriter, r *http.Request) {
+	phone := normPhone(r.URL.Query().Get("phone"))
+	if phone == "" {
+		jsonOK(w, map[string]any{"tier": "normal", "adj": defaultMarkupPercent})
+		return
+	}
+	c, err := dbCustomerTierByPhone(r.Context(), phone)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if c == nil {
+		jsonOK(w, map[string]any{"tier": "normal", "adj": defaultMarkupPercent, "phone": phone})
+		return
+	}
+	jsonOK(w, map[string]any{
+		"tier":    c.Tier,
+		"adj":     c.Adj,
+		"nama":    c.Name,
+		"wilayah": c.Wilayah,
+		"phone":   phone,
+	})
 }

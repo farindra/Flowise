@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -124,12 +126,26 @@ func migrateDB(ctx context.Context) error {
 			updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
+		CREATE TABLE IF NOT EXISTS crm_customers (
+			id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			name        TEXT        NOT NULL,
+			phone       TEXT[]      NOT NULL DEFAULT '{}',
+			wilayah     TEXT        NOT NULL DEFAULT '',
+			tier        TEXT        NOT NULL DEFAULT 'normal',
+			adj         NUMERIC     NOT NULL DEFAULT 0,
+			notes       TEXT        NOT NULL DEFAULT '',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_leads_stage ON crm_leads(stage);
 		CREATE INDEX IF NOT EXISTS idx_leads_phone ON crm_leads(phone);
 		CREATE INDEX IF NOT EXISTS idx_kavlings_status ON crm_kavlings(status);
 		CREATE INDEX IF NOT EXISTS idx_notifs_pending ON crm_notifications(status, scheduled_at)
 			WHERE status = 'pending';
 		CREATE INDEX IF NOT EXISTS idx_salesmen_status ON crm_salesmen(status);
+		CREATE INDEX IF NOT EXISTS idx_customers_tier ON crm_customers(tier);
+		CREATE INDEX IF NOT EXISTS idx_customers_phone ON crm_customers USING GIN(phone);
 
 		CREATE TABLE IF NOT EXISTS crm_campaigns (
 			id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -157,6 +173,82 @@ func migrateDB(ctx context.Context) error {
 
 		ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS campaign_id TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_leads_campaign ON crm_leads(campaign_id);
+	`)
+	if err != nil {
+		return err
+	}
+	return migrateBroadcastDB(ctx)
+}
+
+// migrateBroadcastDB runs the broadcast DDL as its own batch. Kept separate
+// from migrateDB deliberately: that batch is a single Exec whose failure aborts
+// every statement in it (and takes the process down with log.Fatalf), so a
+// problem in the newer tables must not be able to roll back the established
+// schema, nor vice versa. Additive statements only — no ALTER on pre-existing
+// tables.
+func migrateBroadcastDB(ctx context.Context) error {
+	_, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS crm_broadcasts (
+			id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			name              TEXT        NOT NULL,
+			status            TEXT        NOT NULL DEFAULT 'draft',
+			provider          TEXT        NOT NULL DEFAULT 'whatsmeow',
+			sender_id         TEXT        NOT NULL DEFAULT '',
+			message_text      TEXT        NOT NULL DEFAULT '',
+			media_path        TEXT        NOT NULL DEFAULT '',
+			media_mime        TEXT        NOT NULL DEFAULT '',
+			media_mode        TEXT        NOT NULL DEFAULT 'caption',
+			audience          JSONB       NOT NULL DEFAULT '{}',
+			throttle          JSONB       NOT NULL DEFAULT '{}',
+			include_blacklist BOOLEAN     NOT NULL DEFAULT FALSE,
+			all_phones        BOOLEAN     NOT NULL DEFAULT FALSE,
+			dry_run           BOOLEAN     NOT NULL DEFAULT FALSE,
+			scheduled_at      TIMESTAMPTZ,
+			started_at        TIMESTAMPTZ,
+			finished_at       TIMESTAMPTZ,
+			total             INT         NOT NULL DEFAULT 0,
+			last_error        TEXT        NOT NULL DEFAULT '',
+			created_by        TEXT        NOT NULL DEFAULT '',
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS crm_broadcast_recipients (
+			id              BIGSERIAL   PRIMARY KEY,
+			broadcast_id    UUID        NOT NULL REFERENCES crm_broadcasts(id) ON DELETE CASCADE,
+			phone           TEXT        NOT NULL,
+			name            TEXT        NOT NULL DEFAULT '',
+			wilayah         TEXT        NOT NULL DEFAULT '',
+			tier            TEXT        NOT NULL DEFAULT '',
+			customer_id     UUID,
+			source          TEXT        NOT NULL DEFAULT 'customers',
+			vars            JSONB       NOT NULL DEFAULT '{}',
+			status          TEXT        NOT NULL DEFAULT 'pending',
+			skip_reason     TEXT        NOT NULL DEFAULT '',
+			attempts        INT         NOT NULL DEFAULT 0,
+			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_error      TEXT        NOT NULL DEFAULT '',
+			provider_msg_id TEXT        NOT NULL DEFAULT '',
+			claimed_at      TIMESTAMPTZ,
+			sent_at         TIMESTAMPTZ,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS crm_broadcast_optouts (
+			phone      TEXT        PRIMARY KEY,
+			reason     TEXT        NOT NULL DEFAULT 'stop_keyword',
+			note       TEXT        NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_bcast_recipient
+			ON crm_broadcast_recipients(broadcast_id, phone);
+		CREATE INDEX IF NOT EXISTS idx_bcast_queue
+			ON crm_broadcast_recipients(broadcast_id, next_attempt_at) WHERE status = 'pending';
+		CREATE INDEX IF NOT EXISTS idx_bcast_sent
+			ON crm_broadcast_recipients(phone, sent_at) WHERE status = 'sent';
+		CREATE INDEX IF NOT EXISTS idx_bcast_due
+			ON crm_broadcasts(status, scheduled_at) WHERE status IN ('scheduled', 'running');
 	`)
 	return err
 }
@@ -670,4 +762,206 @@ func dbDeleteCampaign(ctx context.Context, id string) error {
 
 func dbIncrCampaignLeads(ctx context.Context, campaignID string) {
 	pool.Exec(ctx, `UPDATE crm_campaigns SET leads_count=leads_count+1, updated_at=NOW() WHERE id=$1`, campaignID)
+}
+
+// ── Customers (VIP / Blacklist tiering) ────────────────────────────────────────
+
+type Customer struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Phone     []string  `json:"phone"`
+	Wilayah   string    `json:"wilayah"`
+	Tier      string    `json:"tier"` // normal | vip | blacklist
+	Adj       float64   `json:"adj"`
+	Notes     string    `json:"notes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+var customerScanCols = `id, name, phone, wilayah, tier, adj, notes, created_at, updated_at`
+
+func scanCustomer(rows interface{ Scan(...any) error }) (*Customer, error) {
+	c := &Customer{}
+	err := rows.Scan(&c.ID, &c.Name, &c.Phone, &c.Wilayah, &c.Tier, &c.Adj, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
+	return c, err
+}
+
+// dbListCustomers returns page (1-indexed) of size `limit`, plus the total
+// row count matching q (0/negative limit means "no pagination — all rows").
+func dbListCustomers(ctx context.Context, q, tier string, page, limit int) ([]Customer, int, error) {
+	var conds []string
+	args := []any{}
+	if q != "" {
+		args = append(args, "%"+q+"%")
+		conds = append(conds, fmt.Sprintf(`(name ILIKE $%d OR wilayah ILIKE $%d OR EXISTS (SELECT 1 FROM unnest(phone) p WHERE p ILIKE $%d))`, len(args), len(args), len(args)))
+	}
+	if tier != "" {
+		args = append(args, tier)
+		conds = append(conds, fmt.Sprintf(`tier = $%d`, len(args)))
+	}
+	where := ``
+	if len(conds) > 0 {
+		where = `WHERE ` + strings.Join(conds, " AND ")
+	}
+
+	var total int
+	countSQL := `SELECT COUNT(*) FROM crm_customers ` + where
+	if err := pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	listSQL := `SELECT ` + customerScanCols + ` FROM crm_customers ` + where + ` ORDER BY name`
+	if limit > 0 {
+		if page < 1 {
+			page = 1
+		}
+		listSQL += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, (page-1)*limit)
+	}
+	rows, err := pool.Query(ctx, listSQL, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []Customer
+	for rows.Next() {
+		c, err := scanCustomer(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *c)
+	}
+	return out, total, rows.Err()
+}
+
+func dbGetCustomer(ctx context.Context, id string) (*Customer, error) {
+	row := pool.QueryRow(ctx, `SELECT `+customerScanCols+` FROM crm_customers WHERE id=$1`, id)
+	return scanCustomer(row)
+}
+
+func dbCreateCustomer(ctx context.Context, c *Customer) (string, error) {
+	var id string
+	err := pool.QueryRow(ctx, `
+		INSERT INTO crm_customers (name, phone, wilayah, tier, adj, notes)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		c.Name, c.Phone, c.Wilayah, c.Tier, c.Adj, c.Notes,
+	).Scan(&id)
+	return id, err
+}
+
+func dbUpdateCustomer(ctx context.Context, c *Customer) error {
+	_, err := pool.Exec(ctx, `
+		UPDATE crm_customers SET name=$1, phone=$2, wilayah=$3, tier=$4, adj=$5, notes=$6, updated_at=NOW()
+		WHERE id=$7`,
+		c.Name, c.Phone, c.Wilayah, c.Tier, c.Adj, c.Notes, c.ID,
+	)
+	return err
+}
+
+func dbDeleteCustomer(ctx context.Context, id string) error {
+	_, err := pool.Exec(ctx, `DELETE FROM crm_customers WHERE id=$1`, id)
+	return err
+}
+
+// dbCustomerTierByPhone — used by the Flowise lookup tool. Returns nil (no
+// error) when the phone isn't found, meaning "normal" tier.
+func dbCustomerTierByPhone(ctx context.Context, phone string) (*Customer, error) {
+	row := pool.QueryRow(ctx, `SELECT `+customerScanCols+` FROM crm_customers WHERE $1 = ANY(phone) LIMIT 1`, phone)
+	c, err := scanCustomer(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+type CustomerMatch struct {
+	ID   string
+	Name string
+}
+
+// dbBatchFindMatches resolves, in a single round trip, which existing
+// customers each row in a batch would match by phone overlap. `phonesByIdx`
+// maps an arbitrary caller-assigned index (e.g. row position in the batch)
+// to that row's normalized phone numbers; rows with no phones are skipped
+// (they always mean "create new", no lookup needed). The result only
+// contains entries for indexes that had at least one match.
+func dbBatchFindMatches(ctx context.Context, phonesByIdx map[int][]string) (map[int][]CustomerMatch, error) {
+	result := map[int][]CustomerMatch{}
+	if len(phonesByIdx) == 0 {
+		return result, nil
+	}
+
+	var args []any
+	var values []string
+	for idx, phones := range phonesByIdx {
+		if len(phones) == 0 {
+			continue
+		}
+		args = append(args, idx, phones)
+		values = append(values, fmt.Sprintf("($%d::int, $%d::text[])", len(args)-1, len(args)))
+	}
+	if len(values) == 0 {
+		return result, nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT b.idx, c.id, c.name
+		FROM (VALUES %s) AS b(idx, phones)
+		JOIN crm_customers c ON c.phone && b.phones`, strings.Join(values, ","))
+
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var idx int
+		var m CustomerMatch
+		if err := rows.Scan(&idx, &m.ID, &m.Name); err != nil {
+			return nil, err
+		}
+		result[idx] = append(result[idx], m)
+	}
+	return result, rows.Err()
+}
+
+// dbUpsertCustomerWithMatches applies the create/update/conflict decision
+// given matches already resolved (typically via dbBatchFindMatches, to
+// avoid one SELECT per row). Returns true when a new row was created; a
+// non-nil error for the ">1 match" case means an unresolved conflict —
+// nothing was written, the caller must surface it for manual review.
+func dbUpsertCustomerWithMatches(ctx context.Context, c *Customer, matches []CustomerMatch) (created bool, err error) {
+	if len(matches) == 0 {
+		id, err := dbCreateCustomer(ctx, c)
+		c.ID = id
+		return true, err
+	}
+	if len(matches) > 1 {
+		names := make([]string, len(matches))
+		for i, m := range matches {
+			names[i] = m.Name
+		}
+		return false, fmt.Errorf("nomor HP cocok dengan %d customer berbeda (%s) — gabungkan manual dulu di UI sebelum import ulang",
+			len(matches), strings.Join(names, ", "))
+	}
+	c.ID = matches[0].ID
+	return false, dbUpdateCustomer(ctx, c)
+}
+
+// dbUpsertCustomerByPhone is the single-row convenience wrapper (used by
+// call sites that aren't batching, e.g. a one-off admin action). Batch
+// import uses dbBatchFindMatches + dbUpsertCustomerWithMatches directly.
+func dbUpsertCustomerByPhone(ctx context.Context, c *Customer) (created bool, err error) {
+	if len(c.Phone) == 0 {
+		id, err := dbCreateCustomer(ctx, c)
+		c.ID = id
+		return true, err
+	}
+	matches, err := dbBatchFindMatches(ctx, map[int][]string{0: c.Phone})
+	if err != nil {
+		return false, err
+	}
+	return dbUpsertCustomerWithMatches(ctx, c, matches[0])
 }

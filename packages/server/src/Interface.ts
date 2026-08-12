@@ -446,6 +446,7 @@ export interface IFlowConfig {
     overrideConfig?: ICommonObject
     state?: ICommonObject
     runtimeChatHistoryLength?: number
+    hasImage?: string
 }
 
 export interface IPredictionQueueAppServer {

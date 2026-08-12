@@ -5,11 +5,9 @@ const router = express.Router()
 
 // Proxy ke log-search service di port 8200
 router.get('/search', (req, res) => {
-    const q = req.query.q as string
-    const date = req.query.date as string
-    if (!q) return res.status(400).json({ error: 'query required' })
+    const q = (req.query.q as string) || ''
 
-    const path = `/logs/search?q=${encodeURIComponent(q)}&date=${encodeURIComponent(date || '')}`
+    const path = `/logs/search?q=${encodeURIComponent(q)}`
     const options = {
         hostname: '127.0.0.1',
         port: 8200,

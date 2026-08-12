@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
     Box,
     Button,
@@ -53,6 +53,11 @@ function ExpandableRow({ row }) {
                 <TableCell sx={{ width: 36, py: 1 }}>
                     <IconButton size='small'>{open ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}</IconButton>
                 </TableCell>
+                <TableCell sx={{ py: 1, whiteSpace: 'nowrap' }}>
+                    <Typography variant='caption' color='text.secondary'>
+                        {(row.time || '').replace('T', ' ').replace('Z', '')}
+                    </Typography>
+                </TableCell>
                 <TableCell sx={{ py: 1 }}>
                     <Chip
                         size='small'
@@ -70,7 +75,7 @@ function ExpandableRow({ row }) {
                             sx={{ fontFamily: 'monospace', fontWeight: 700, bgcolor: '#fff8e1', color: '#f57f17', fontSize: 12 }}
                         />
                     ) : (
-                        <Typography variant='caption' color='text.disabled'>
+                        <Typography variant='caption' color='text.secondary'>
                             —
                         </Typography>
                     )}
@@ -81,11 +86,6 @@ function ExpandableRow({ row }) {
                 <TableCell sx={{ py: 1, maxWidth: 420 }}>
                     <Typography variant='body2' noWrap sx={{ color: 'text.secondary', fontFamily: 'monospace', fontSize: 12 }}>
                         {(row.message || '').slice(0, 140)}
-                    </Typography>
-                </TableCell>
-                <TableCell sx={{ py: 1, whiteSpace: 'nowrap' }}>
-                    <Typography variant='caption' color='text.disabled'>
-                        {(row.time || '').replace('T', ' ').replace('Z', '')}
                     </Typography>
                 </TableCell>
             </TableRow>
@@ -126,18 +126,16 @@ ExpandableRow.propTypes = {
 
 export default function LogViewer() {
     const [query, setQuery] = useState('')
-    const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
     const [results, setResults] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
 
     const search = async () => {
         const q = query.trim().toUpperCase()
-        if (!q) return
         setLoading(true)
         setError(null)
         try {
-            const res = await fetch(`${SEARCH_URL}?q=${encodeURIComponent(q)}&date=${date}`)
+            const res = await fetch(`${SEARCH_URL}?q=${encodeURIComponent(q)}`)
             const data = await res.json()
             if (data.error) throw new Error(data.error)
             setResults(data)
@@ -148,6 +146,12 @@ export default function LogViewer() {
             setLoading(false)
         }
     }
+
+    // Load the 50 most recent log entries on first mount (empty query = no filter)
+    useEffect(() => {
+        search()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
 
     const handleKey = (e) => {
         if (e.key === 'Enter') search()
@@ -163,7 +167,7 @@ export default function LogViewer() {
                 <Stack direction='row' spacing={1.5} alignItems='center' flexWrap='wrap'>
                     <TextField
                         size='small'
-                        placeholder='Cari error code (A3K9M) atau keyword...'
+                        placeholder='Cari error code (A3K9M) atau keyword... (kosongkan untuk 50 log terakhir)'
                         value={query}
                         onChange={handleQueryChange}
                         onKeyDown={handleKey}
@@ -177,11 +181,10 @@ export default function LogViewer() {
                             sx: { fontFamily: 'monospace', letterSpacing: '0.05em' }
                         }}
                     />
-                    <TextField size='small' type='date' value={date} onChange={(e) => setDate(e.target.value)} sx={{ width: 160 }} />
                     <Button
                         variant='contained'
                         onClick={search}
-                        disabled={loading || !query.trim()}
+                        disabled={loading}
                         startIcon={loading ? <CircularProgress size={14} color='inherit' /> : <IconSearch size={16} />}
                     >
                         {loading ? 'Mencari...' : 'Cari'}
@@ -193,33 +196,32 @@ export default function LogViewer() {
                     )}
                 </Stack>
 
-                <Typography variant='caption' color='text.disabled'>
-                    Cari by error code 5 huruf dari pesan Telegram, atau keyword lain. Source: salesman-service + Flowise server logs.
+                <Typography variant='caption' color='text.secondary'>
+                    Cari by error code 5 huruf atau keyword lain. Kosongkan untuk lihat 50 log terakhir. Source: salesman-service + Flowise
+                    server logs.
                 </Typography>
 
                 {error && <Alert severity='error'>{error}</Alert>}
 
                 {results && results.total === 0 && (
-                    <Alert severity='info'>
-                        Tidak ada hasil untuk &quot;{results.query}&quot; pada {results.date}
-                    </Alert>
+                    <Alert severity='info'>Tidak ada hasil{results.query ? <> untuk &quot;{results.query}&quot;</> : null}</Alert>
                 )}
 
                 {results && results.total > 0 && (
                     <Box>
                         <Typography variant='caption' color='text.secondary' sx={{ mb: 1, display: 'block' }}>
-                            {results.total} hasil untuk &quot;{results.query}&quot; — {results.date}
+                            {results.total} {results.query ? <>hasil untuk &quot;{results.query}&quot;</> : '50 log terakhir'}
                         </Typography>
                         <TableContainer component={Paper} variant='outlined'>
                             <Table size='small'>
                                 <TableHead>
                                     <TableRow>
                                         <TableCell sx={{ width: 36 }} />
+                                        <TableCell sx={{ width: 150 }}>Waktu</TableCell>
                                         <TableCell sx={{ width: 80 }}>Level</TableCell>
                                         <TableCell sx={{ width: 100 }}>Kode</TableCell>
                                         <TableCell sx={{ width: 140 }}>Source</TableCell>
                                         <TableCell>Pesan</TableCell>
-                                        <TableCell sx={{ width: 150 }}>Waktu</TableCell>
                                     </TableRow>
                                 </TableHead>
                                 <TableBody>

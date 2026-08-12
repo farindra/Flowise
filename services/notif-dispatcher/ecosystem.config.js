@@ -3,7 +3,7 @@ module.exports = {
         {
             name: 'notif-dispatcher',
             script: 'index.js',
-            cwd: '/root/App/alazhar-agentic/services/notif-dispatcher',
+            cwd: '/www/wwwroot/agentic.oceanbearings.co.id/services/notif-dispatcher',
             env: {
                 WA_SESSION_ID: 'e6a7c815-7316-4590-9f70-a15f7c7e4def',
                 CRM_INTERNAL_KEY: 'ob-crm-internal-2026',

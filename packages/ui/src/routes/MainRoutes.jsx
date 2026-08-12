@@ -71,7 +71,9 @@ const FAQ = Loadable(lazy(() => import('@/views/faq')))
 const LogViewer = Loadable(lazy(() => import('@/views/log-viewer')))
 const CRMLeads = Loadable(lazy(() => import('@/views/crm-leads')))
 const CRMSalesmen = Loadable(lazy(() => import('@/views/crm-salesmen')))
+const CRMCustomers = Loadable(lazy(() => import('@/views/crm-customers')))
 const CRMCampaigns = Loadable(lazy(() => import('@/views/crm-campaigns')))
+const CRMBroadcast = Loadable(lazy(() => import('@/views/crm-broadcast')))
 const IoTMonitor = Loadable(lazy(() => import('@/views/iot-monitor')))
 const SyncStatus = Loadable(lazy(() => import('@/views/sync-status')))
 const TelegramSession = Loadable(lazy(() => import('@/views/telegram-session')))
@@ -371,8 +373,16 @@ const MainRoutes = {
             element: <CRMSalesmen />
         },
         {
+            path: '/crm-customers',
+            element: <CRMCustomers />
+        },
+        {
             path: '/crm-campaigns',
             element: <CRMCampaigns />
+        },
+        {
+            path: '/crm-broadcast',
+            element: <CRMBroadcast />
         },
         {
             path: '/iot-monitor',

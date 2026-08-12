@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,86 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// botPhones is a process-wide registry of phone numbers that belong to our
+// own WA bot sessions. It's used to break bot-to-bot reply loops: if a
+// session's own greeting reaches another one of our bots (e.g. both are
+// members of the same group, or one has the other saved as a contact), the
+// receiving bot must not treat it as a real customer message.
+var (
+	botPhonesMu sync.RWMutex
+	botPhones   = map[string]bool{}
+)
+
+func registerBotPhone(phone string) {
+	if phone == "" {
+		return
+	}
+	botPhonesMu.Lock()
+	botPhones[phone] = true
+	botPhonesMu.Unlock()
+}
+
+func isBotPhone(phone string) bool {
+	botPhonesMu.RLock()
+	defer botPhonesMu.RUnlock()
+	return botPhones[phone]
+}
+
+// sessionRateLimiter is a per-chatId circuit breaker: if one sender crosses
+// rateLimitMaxMessages within rateLimitWindow, further messages from them
+// are dropped (no Flowise/LLM call) until the window rolls past. This caps
+// the damage of ANY runaway loop — bot-to-bot, a misbehaving client, or a
+// future bug — not just the specific pairing we found, since Flowise's own
+// rate limiter can only key on source IP and all our gateway traffic shares
+// one IP.
+const (
+	rateLimitWindow        = 5 * time.Minute
+	rateLimitMaxMessages   = 25
+	rateLimitAlertCooldown = 30 * time.Minute
+)
+
+type sessionRateLimiter struct {
+	mu      sync.Mutex
+	hits    map[string][]time.Time
+	alerted map[string]time.Time
+}
+
+func newSessionRateLimiter() *sessionRateLimiter {
+	return &sessionRateLimiter{hits: map[string][]time.Time{}, alerted: map[string]time.Time{}}
+}
+
+// allow records a hit for phone and reports whether it's still under the
+// limit, plus the current count in the window (for logging/alerting).
+func (rl *sessionRateLimiter) allow(phone string) (ok bool, count int) {
+	now := time.Now()
+	cutoff := now.Add(-rateLimitWindow)
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	kept := rl.hits[phone][:0]
+	for _, t := range rl.hits[phone] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	rl.hits[phone] = kept
+	count = len(kept)
+	return count <= rateLimitMaxMessages, count
+}
+
+// shouldAlert reports whether an admin alert for phone should fire now,
+// throttled to at most one per rateLimitAlertCooldown.
+func (rl *sessionRateLimiter) shouldAlert(phone string) bool {
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if last, ok := rl.alerted[phone]; ok && now.Sub(last) < rateLimitAlertCooldown {
+		return false
+	}
+	rl.alerted[phone] = now
+	return true
+}
+
 type WASession struct {
 	id            string
 	name          string
@@ -48,7 +129,8 @@ type WASession struct {
 	qrReady   chan struct{}
 	phone     string
 
-	httpClient *http.Client
+	httpClient  *http.Client
+	rateLimiter *sessionRateLimiter
 }
 
 func newWASession(r *SessionRecord, flowiseBaseURL, flowiseAPIKey, dataDir string, timeout time.Duration) (*WASession, error) {
@@ -88,6 +170,7 @@ func newWASession(r *SessionRecord, flowiseBaseURL, flowiseAPIKey, dataDir strin
 		container:      container,
 		qrReady:        make(chan struct{}),
 		httpClient:     &http.Client{Timeout: timeout},
+		rateLimiter:    newSessionRateLimiter(),
 	}
 
 	waClient.AddEventHandler(s.handleEvent)
@@ -100,6 +183,7 @@ func (s *WASession) Connect(ctx context.Context) {
 			s.mu.Lock()
 			s.phone = s.waClient.Store.ID.User
 			s.mu.Unlock()
+			registerBotPhone(s.phone)
 			return
 		}
 		// Stored session expired/rejected — clear credentials and fall through to QR flow.
@@ -151,6 +235,7 @@ func (s *WASession) runQRFlow(ctx context.Context) {
 					s.phone = s.waClient.Store.ID.User
 				}
 				s.mu.Unlock()
+				registerBotPhone(s.phone)
 				return
 			case "timeout":
 				s.mu.Lock()
@@ -265,6 +350,7 @@ func (s *WASession) handleEvent(rawEvt interface{}) {
 			s.phone = s.waClient.Store.ID.User
 		}
 		s.mu.Unlock()
+		registerBotPhone(s.phone)
 		fmt.Printf("[%s] Connected: +%s\n", s.name, s.phone)
 	case *events.Disconnected:
 		fmt.Printf("[%s] Disconnected\n", s.name)
@@ -288,18 +374,28 @@ func (s *WASession) handleEvent(rawEvt interface{}) {
 	}
 }
 
-func (s *WASession) SendMessage(ctx context.Context, phone, text string) error {
-	phone = strings.TrimPrefix(phone, "+")
+// normalizeWAPhone strips a leading "+" and rewrites a leading local "0" into
+// the Indonesian country code, so callers can pass either form.
+func normalizeWAPhone(phone string) string {
+	phone = strings.TrimPrefix(strings.TrimSpace(phone), "+")
 	if strings.HasPrefix(phone, "0") {
 		phone = "62" + phone[1:]
 	}
-	jid, err := parseJID(phone)
+	return phone
+}
+
+// SendMessage sends a text message and returns the WhatsApp message ID.
+func (s *WASession) SendMessage(ctx context.Context, phone, text string) (string, error) {
+	jid, err := parseJID(normalizeWAPhone(phone))
 	if err != nil {
-		return fmt.Errorf("invalid phone: %w", err)
+		return "", fmt.Errorf("invalid phone: %w", err)
 	}
 	msg := &waE2E.Message{Conversation: proto.String(mdToWA(text))}
-	_, err = s.waClient.SendMessage(ctx, jid, msg)
-	return err
+	resp, err := s.waClient.SendMessage(ctx, jid, msg)
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
 }
 
 const errCodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -316,21 +412,125 @@ func parseJID(phone string) (types.JID, error) {
 	return types.ParseJID(phone + "@s.whatsapp.net")
 }
 
+// reWAPhone matches an already-usable Indonesian WhatsApp number.
+var reWAPhone = regexp.MustCompile(`^62[0-9]{8,13}$`)
+
+// ResolveLIDs maps WhatsApp LIDs to real phone numbers using this session's
+// local LID store. Identifiers that already look like phone numbers come back
+// in `passthrough` rather than `resolved`, because callers building a broadcast
+// audience must be able to tell the two apart — anything that merely looks
+// numeric may be from another platform (e.g. a Telegram user ID that shares the
+// chatflow) and should not be messaged by default.
+func (s *WASession) ResolveLIDs(ctx context.Context, ids []string) (resolved, passthrough map[string]string, unresolved []string) {
+	resolved = map[string]string{}
+	passthrough = map[string]string{}
+	unresolved = []string{}
+
+	// A session that has never completed pairing has no LID store yet, so
+	// every identifier is simply unresolvable here rather than an error.
+	hasLIDStore := s.waClient != nil && s.waClient.Store != nil && s.waClient.Store.LIDs != nil
+
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if hasLIDStore {
+			jid := types.JID{User: id, Server: types.HiddenUserServer}
+			if pn, err := s.waClient.Store.LIDs.GetPNForLID(ctx, jid); err == nil && pn.User != "" {
+				resolved[id] = pn.User
+				continue
+			}
+		}
+		if reWAPhone.MatchString(id) {
+			passthrough[id] = id
+			continue
+		}
+		unresolved = append(unresolved, id)
+	}
+	return resolved, passthrough, unresolved
+}
+
 func (s *WASession) handleMessage(evt *events.Message) {
 	text := extractText(evt.Message)
-	if text == "" {
+	imgMsg := evt.Message.GetImageMessage()
+	if text == "" && imgMsg == nil {
 		return
 	}
 
 	senderPhone := evt.Info.Sender.User
+
+	// Loop guard: resolve LID senders to their real phone number and drop
+	// the message if it's coming from one of our own bot numbers. Without
+	// this, two of our bots that have each other as a contact (or share a
+	// group) will auto-reply to each other's greeting forever, burning API
+	// quota non-stop.
+	resolvedPhone := senderPhone
+	if evt.Info.Sender.Server == types.HiddenUserServer {
+		if pn, err := s.waClient.Store.LIDs.GetPNForLID(context.Background(), evt.Info.Sender); err == nil && pn.User != "" {
+			resolvedPhone = pn.User
+		}
+	}
+	if isBotPhone(resolvedPhone) {
+		fmt.Printf("[%s] loop guard: dropping message from own bot number %s (lid sender %s)\n", s.name, resolvedPhone, senderPhone)
+		return
+	}
+
+	if ok, count := s.rateLimiter.allow(resolvedPhone); !ok {
+		fmt.Printf("[%s] rate limit: %s sent %d msgs in %s, dropping\n", s.name, resolvedPhone, count, rateLimitWindow)
+		if s.humanContact != "" && s.rateLimiter.shouldAlert(resolvedPhone) {
+			go func() {
+				alertCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				alertMsg := fmt.Sprintf("⚠️ [%s] Sesi %s kirim %d+ pesan dalam %s — auto-pause sementara (kemungkinan loop/spam). Cek manual kalau perlu.", s.name, resolvedPhone, count, rateLimitWindow)
+				_ = s.SendText(alertCtx, s.humanContact, alertMsg)
+			}()
+		}
+		return
+	}
+
 	if len(s.allowPhones) > 0 && !s.allowPhones[senderPhone] {
+		return
+	}
+
+	// Broadcast opt-out. Handled before the Flowise call so an unsubscribe is
+	// never answered by the sales agent, and recorded against resolvedPhone
+	// because that is the number a broadcast would target.
+	if isStopKeyword(text) {
+		go postOptOut(resolvedPhone, s.name)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		if _, err := s.SendMessage(stopCtx, resolvedPhone, optOutReply); err != nil {
+			fmt.Printf("[%s] opt-out confirmation to %s failed: %v\n", s.name, resolvedPhone, err)
+		}
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
-	reply, err := s.callFlowise(ctx, text, senderPhone)
+	var uploads []map[string]any
+	if imgMsg != nil && !s.disableUpload {
+		if text == "" {
+			text = imgMsg.GetCaption()
+		}
+		if data, err := s.waClient.Download(ctx, imgMsg); err != nil {
+			fmt.Printf("[%s] image download error from %s: %v\n", s.name, senderPhone, err)
+		} else {
+			mime := imgMsg.GetMimetype()
+			if mime == "" {
+				mime = "image/jpeg"
+			}
+			uploads = []map[string]any{{
+				"data": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data),
+				"type": "file",
+				"name": "image." + strings.TrimPrefix(mime, "image/"),
+				"mime": mime,
+			}}
+		}
+	}
+
+	reply, err := s.callFlowise(ctx, text, senderPhone, uploads)
 	if err != nil {
 		code := newErrorCode()
 		if ctx.Err() != nil {
@@ -357,12 +557,16 @@ func (s *WASession) handleMessage(evt *events.Message) {
 	}
 }
 
-func (s *WASession) callFlowise(ctx context.Context, question, sessionID string) (string, error) {
+func (s *WASession) callFlowise(ctx context.Context, question, sessionID string, uploads []map[string]any) (string, error) {
 	url := s.flowiseBaseURL + "/api/v1/prediction/" + s.chatflowID
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"question": question,
 		"chatId":   sessionID,
-	})
+	}
+	if len(uploads) > 0 {
+		payload["uploads"] = uploads
+	}
+	body, _ := json.Marshal(payload)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

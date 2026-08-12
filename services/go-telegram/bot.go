@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +13,49 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// ── Per-chat rate limiter (circuit breaker) ─────────────────────────────────────
+// Caps damage from any runaway loop (e.g. a bot replying to another bot, a
+// stuck client, or a future bug) by dropping further messages from one
+// sessionID once it crosses rateLimitMaxMessages within rateLimitWindow.
+
+const (
+	rateLimitWindow      = 5 * time.Minute
+	rateLimitMaxMessages = 25
+)
+
+type sessionRateLimiter struct {
+	mu   sync.Mutex
+	hits map[string][]time.Time
+}
+
+func newSessionRateLimiter() *sessionRateLimiter {
+	return &sessionRateLimiter{hits: map[string][]time.Time{}}
+}
+
+func (rl *sessionRateLimiter) allow(key string) (ok bool, count int) {
+	now := time.Now()
+	cutoff := now.Add(-rateLimitWindow)
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	kept := rl.hits[key][:0]
+	for _, t := range rl.hits[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	rl.hits[key] = kept
+	count = len(kept)
+	return count <= rateLimitMaxMessages, count
+}
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -44,6 +83,12 @@ type Document struct {
 	FileSize int64  `json:"file_size"`
 }
 
+type PhotoSize struct {
+	FileID string `json:"file_id"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
 type GetFileResponse struct {
 	OK     bool   `json:"ok"`
 	Result struct {
@@ -52,11 +97,13 @@ type GetFileResponse struct {
 }
 
 type Message struct {
-	MessageID int       `json:"message_id"`
-	From      *User     `json:"from"`
-	Chat      Chat      `json:"chat"`
-	Text      string    `json:"text"`
-	Document  *Document `json:"document"`
+	MessageID int         `json:"message_id"`
+	From      *User       `json:"from"`
+	Chat      Chat        `json:"chat"`
+	Text      string      `json:"text"`
+	Caption   string      `json:"caption"`
+	Document  *Document   `json:"document"`
+	Photo     []PhotoSize `json:"photo"`
 }
 
 type User struct {
@@ -89,8 +136,9 @@ type TelegramSendResult struct {
 }
 
 type FlowiseRequest struct {
-	Question string `json:"question"`
-	ChatID   string `json:"chatId,omitempty"`
+	Question string           `json:"question"`
+	ChatID   string           `json:"chatId,omitempty"`
+	Uploads  []map[string]any `json:"uploads,omitempty"`
 }
 
 type FlowiseResponse struct {
@@ -112,6 +160,7 @@ type Bot struct {
 	flowiseCli    *http.Client
 	timeout       time.Duration
 	waitInterval  time.Duration
+	rateLimiter   *sessionRateLimiter
 }
 
 func newBot(name, token, flowiseURL, flowiseKey, webhookSecret, humanContact string,
@@ -130,6 +179,7 @@ func newBot(name, token, flowiseURL, flowiseKey, webhookSecret, humanContact str
 		flowiseCli:    &http.Client{Timeout: timeout + 5*time.Second},
 		timeout:       timeout,
 		waitInterval:  waitInterval,
+		rateLimiter:   newSessionRateLimiter(),
 	}
 }
 
@@ -174,7 +224,7 @@ func (b *Bot) handler(w http.ResponseWriter, r *http.Request) {
 		go b.processDocumentMessage(update.Message)
 		return
 	}
-	if strings.TrimSpace(update.Message.Text) == "" {
+	if strings.TrimSpace(update.Message.Text) == "" && len(update.Message.Photo) == 0 {
 		return
 	}
 	go b.processMessage(update.Message)
@@ -190,6 +240,11 @@ func (b *Bot) processMessage(msg *Message) {
 		}
 	}
 	sessionID := strconv.FormatInt(chatID, 10)
+
+	if ok, count := b.rateLimiter.allow(sessionID); !ok {
+		log.Printf("[%s] rate limit: chat %s sent %d msgs in %s, dropping", b.name, sessionID, count, rateLimitWindow)
+		return
+	}
 
 	if len(b.ownerIDs) > 0 && (msg.From == nil || !b.ownerIDs[msg.From.ID]) {
 		b.sendText(chatID, "❌ Akses ditolak.")
@@ -225,7 +280,25 @@ func (b *Bot) processMessage(msg *Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 
-	answer, err := b.callFlowise(ctx, msg.Text, sessionID)
+	question := msg.Text
+	var uploads []map[string]any
+	if len(msg.Photo) > 0 {
+		if question == "" {
+			question = msg.Caption
+		}
+		if data, mime, err := b.downloadPhoto(ctx, msg.Photo); err != nil {
+			log.Printf("[%s] photo download error chat:%d: %v", b.name, chatID, err)
+		} else {
+			uploads = []map[string]any{{
+				"data": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data),
+				"type": "file",
+				"name": "image." + strings.TrimPrefix(mime, "image/"),
+				"mime": mime,
+			}}
+		}
+	}
+
+	answer, err := b.callFlowise(ctx, question, sessionID, uploads)
 	close(done)
 
 	if err != nil {
@@ -274,8 +347,48 @@ func (b *Bot) processMessage(msg *Message) {
 	}
 }
 
-func (b *Bot) callFlowise(ctx context.Context, question, sessionID string) (string, error) {
-	payload := FlowiseRequest{Question: question, ChatID: sessionID}
+// downloadPhoto fetches the highest-resolution size of an incoming photo
+// (Telegram lists PhotoSize entries smallest-to-largest) and returns its
+// bytes plus a best-guess mime type inferred from the file extension —
+// Telegram's getFile response doesn't include a mime type for photos.
+func (b *Bot) downloadPhoto(ctx context.Context, sizes []PhotoSize) ([]byte, string, error) {
+	fileID := sizes[len(sizes)-1].FileID
+
+	raw, err := b.telegramAPIWithResult("getFile", map[string]string{"file_id": fileID})
+	if err != nil {
+		return nil, "", fmt.Errorf("getFile: %w", err)
+	}
+	var gfResp GetFileResponse
+	if err := jsonUnmarshal(raw, &gfResp); err != nil || gfResp.Result.FilePath == "" {
+		return nil, "", fmt.Errorf("invalid getFile response")
+	}
+
+	mime := "image/jpeg"
+	if ext := strings.ToLower(filepath.Ext(gfResp.Result.FilePath)); ext == ".png" {
+		mime = "image/png"
+	} else if ext == ".webp" {
+		mime = "image/webp"
+	}
+
+	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.token, gfResp.Result.FilePath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := b.tgClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, mime, nil
+}
+
+func (b *Bot) callFlowise(ctx context.Context, question, sessionID string, uploads []map[string]any) (string, error) {
+	payload := FlowiseRequest{Question: question, ChatID: sessionID, Uploads: uploads}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.flowiseURL, bytes.NewReader(body))
 	if err != nil {
