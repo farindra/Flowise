@@ -177,7 +177,21 @@ func migrateDB(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return migrateBroadcastDB(ctx)
+	if err := migrateBroadcastDB(ctx); err != nil {
+		return err
+	}
+	return migrateCustomerTierDefault(ctx)
+}
+
+// migrateCustomerTierDefault switches the DB-level default for new customer
+// rows from "normal" (adj forced to 0) to "unregistered" (gets the live
+// unregistered-customer markup). "normal" must now be a deliberate staff
+// choice — see TierUnregistered in api.go. This only changes the column
+// default for future raw inserts; the Go handlers already set this
+// explicitly. Safe to re-run.
+func migrateCustomerTierDefault(ctx context.Context) error {
+	_, err := pool.Exec(ctx, `ALTER TABLE crm_customers ALTER COLUMN tier SET DEFAULT 'unregistered'`)
+	return err
 }
 
 // migrateBroadcastDB runs the broadcast DDL as its own batch. Kept separate
@@ -879,6 +893,8 @@ func dbCustomerTierByPhone(ctx context.Context, phone string) (*Customer, error)
 type CustomerMatch struct {
 	ID   string
 	Name string
+	Tier string
+	Adj  float64
 }
 
 // dbBatchFindMatches resolves, in a single round trip, which existing
@@ -907,7 +923,7 @@ func dbBatchFindMatches(ctx context.Context, phonesByIdx map[int][]string) (map[
 	}
 
 	query := fmt.Sprintf(`
-		SELECT b.idx, c.id, c.name
+		SELECT b.idx, c.id, c.name, c.tier, c.adj
 		FROM (VALUES %s) AS b(idx, phones)
 		JOIN crm_customers c ON c.phone && b.phones`, strings.Join(values, ","))
 
@@ -919,7 +935,7 @@ func dbBatchFindMatches(ctx context.Context, phonesByIdx map[int][]string) (map[
 	for rows.Next() {
 		var idx int
 		var m CustomerMatch
-		if err := rows.Scan(&idx, &m.ID, &m.Name); err != nil {
+		if err := rows.Scan(&idx, &m.ID, &m.Name, &m.Tier, &m.Adj); err != nil {
 			return nil, err
 		}
 		result[idx] = append(result[idx], m)
@@ -947,6 +963,19 @@ func dbUpsertCustomerWithMatches(ctx context.Context, c *Customer, matches []Cus
 			len(matches), strings.Join(names, ", "))
 	}
 	c.ID = matches[0].ID
+
+	// Sticky VIP/blacklist: a sync or import that doesn't explicitly say
+	// vip/blacklist must never downgrade a customer who was already
+	// deliberately classified — otherwise a routine re-import (or a future
+	// Jurnal sync) silently erases manual VIP/blacklist work. An explicit
+	// vip/blacklist in the incoming row is still a real reclassification and
+	// is allowed through.
+	existingTier := matches[0].Tier
+	if (existingTier == "vip" || existingTier == "blacklist") && c.Tier != "vip" && c.Tier != "blacklist" {
+		c.Tier = existingTier
+		c.Adj = matches[0].Adj
+	}
+
 	return false, dbUpdateCustomer(ctx, c)
 }
 

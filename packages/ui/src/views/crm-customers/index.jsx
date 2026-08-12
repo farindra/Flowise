@@ -52,7 +52,10 @@ const EMPTY_FORM = {
     name: '',
     phone: '',
     wilayah: '',
-    tier: 'normal',
+    // "normal" (adj forced to 0, no markup at all) must be a deliberate
+    // choice — the default for a newly added customer is "unregistered",
+    // which gets the standard markup like any not-yet-classified number.
+    tier: 'unregistered',
     adj: '',
     notes: ''
 }
@@ -60,7 +63,8 @@ const EMPTY_FORM = {
 const TIER_META = {
     vip: { label: 'VIP', color: 'success', icon: <IconStar size={12} /> },
     blacklist: { label: 'Blacklist', color: 'error', icon: <IconBan size={12} /> },
-    normal: { label: 'Normal', color: 'default', icon: undefined }
+    normal: { label: 'Normal', color: 'default', icon: undefined },
+    unregistered: { label: 'Belum Terdaftar', color: 'default', icon: undefined }
 }
 
 // Reads a response as JSON, but fails with a clear, readable message
@@ -161,13 +165,14 @@ function CustomerDialog({ open, customer, onClose, onSaved }) {
                             <FormControl size='small' fullWidth>
                                 <InputLabel>Flag</InputLabel>
                                 <Select value={form.tier} label='Flag' onChange={set('tier')}>
+                                    <MenuItem value='unregistered'>Belum Terdaftar (markup default)</MenuItem>
                                     <MenuItem value='normal'>Normal (tanpa penyesuaian)</MenuItem>
                                     <MenuItem value='vip'>VIP (diskon)</MenuItem>
                                     <MenuItem value='blacklist'>Blacklist (markup)</MenuItem>
                                 </Select>
                             </FormControl>
                         </Grid>
-                        {form.tier !== 'normal' && (
+                        {form.tier !== 'normal' && form.tier !== 'unregistered' && (
                             <Grid item xs={6}>
                                 <TextField
                                     size='small'
@@ -178,6 +183,13 @@ function CustomerDialog({ open, customer, onClose, onSaved }) {
                                     onChange={set('adj')}
                                     InputProps={{ startAdornment: <InputAdornment position='start'>%</InputAdornment> }}
                                 />
+                            </Grid>
+                        )}
+                        {form.tier === 'unregistered' && (
+                            <Grid item xs={12}>
+                                <Typography variant='caption' color='text.secondary'>
+                                    Kena markup default (bisa berubah kalau setting-nya diubah) — bukan angka tetap.
+                                </Typography>
                             </Grid>
                         )}
                         <Grid item xs={12}>
@@ -484,7 +496,7 @@ export default function CRMCustomers() {
                             </TableRow>
                         )}
                         {list.map((c) => {
-                            const meta = TIER_META[c.tier] || TIER_META.normal
+                            const meta = TIER_META[c.tier] || TIER_META.unregistered
                             return (
                                 <TableRow key={c.id} hover>
                                     <TableCell>

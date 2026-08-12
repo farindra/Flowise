@@ -859,7 +859,10 @@ func handleCreateCustomer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Tier == "" {
-		body.Tier = "normal"
+		// "normal" (adj forced to 0) must be a deliberate staff choice, never
+		// a silent default — otherwise every customer added without picking a
+		// tier ends up permanently exempt from the unregistered markup.
+		body.Tier = TierUnregistered
 	}
 	c := &Customer{Name: body.Name, Phone: body.phones(), Wilayah: body.Wilayah, Tier: body.Tier, Adj: body.Adj, Notes: body.Notes}
 	id, err := dbCreateCustomer(r.Context(), c)
@@ -909,21 +912,32 @@ func handleDeleteCustomer(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"status": "deleted"})
 }
 
-// defaultMarkupPercent is applied as "adj" for any phone number that isn't
-// registered as VIP or Blacklist. Configurable via DEFAULT_MARKUP_PERCENT env
-// var (set in main.go), defaults to 23 (i.e. +23% over base price).
-var defaultMarkupPercent float64 = 23
+// unregisteredCustomerMarkup is applied as "adj" for the "unregistered" tier —
+// any phone number that isn't registered as VIP or Blacklist, whether because
+// it was never added to crm_customers at all, or because it was added (manual
+// entry or Excel import) without staff deliberately choosing a tier.
+// Configurable via DEFAULT_MARKUP_PERCENT env var (set in main.go), defaults
+// to 23 (i.e. +23% over base price).
+//
+// This is looked up live on every request rather than frozen into a row's adj
+// column at creation time, so raising the percentage in .env immediately
+// applies to every unregistered customer without a bulk data migration.
+var unregisteredCustomerMarkup float64 = 23
+
+// TierUnregistered is the default tier: not deliberately classified as VIP,
+// blacklist, or explicitly "normal" (normal — adj forced to 0 — must be
+// chosen deliberately by staff; it is never the default).
+const TierUnregistered = "unregistered"
 
 // handleCustomerTier — used by the Flowise "customer_tier_lookup" tool.
-// Always returns 200 with tier "normal" when the phone isn't known, so the
-// agent never has to special-case a 404. Unregistered numbers get
-// defaultMarkupPercent as adj instead of 0, per business rule: only
-// VIP/Blacklist-registered customers get a custom rate, everyone else pays
-// the standard markup.
+// Always returns 200 with tier "unregistered" when the phone isn't known (or
+// is known but was never deliberately classified), so the agent never has to
+// special-case a 404 and pricing never silently defaults to "no markup".
 func handleCustomerTier(w http.ResponseWriter, r *http.Request) {
 	phone := normPhone(r.URL.Query().Get("phone"))
+	markup := getUnregisteredMarkup(r.Context())
 	if phone == "" {
-		jsonOK(w, map[string]any{"tier": "normal", "adj": defaultMarkupPercent})
+		jsonOK(w, map[string]any{"tier": TierUnregistered, "adj": markup})
 		return
 	}
 	c, err := dbCustomerTierByPhone(r.Context(), phone)
@@ -932,12 +946,26 @@ func handleCustomerTier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c == nil {
-		jsonOK(w, map[string]any{"tier": "normal", "adj": defaultMarkupPercent, "phone": phone})
+		// Not in crm_customers at all — but they may still be a real,
+		// already-known business customer in Jurnal who just hasn't been
+		// flagged VIP/blacklist. Only a number with no Jurnal record either
+		// is genuinely "unregistered" and gets the markup.
+		if isJurnalCustomer(r.Context(), phone) {
+			jsonOK(w, map[string]any{"tier": "normal", "adj": 0, "phone": phone})
+			return
+		}
+		jsonOK(w, map[string]any{"tier": TierUnregistered, "adj": markup, "phone": phone})
 		return
+	}
+	adj := c.Adj
+	if c.Tier == TierUnregistered {
+		// Ignore whatever is stored in the row: this tier always tracks the
+		// live configured markup, not a value frozen at creation time.
+		adj = markup
 	}
 	jsonOK(w, map[string]any{
 		"tier":    c.Tier,
-		"adj":     c.Adj,
+		"adj":     adj,
 		"nama":    c.Name,
 		"wilayah": c.Wilayah,
 		"phone":   phone,

@@ -489,7 +489,7 @@ func (s *WASession) handleMessage(evt *events.Message) {
 		return
 	}
 
-	if len(s.allowPhones) > 0 && !s.allowPhones[senderPhone] {
+	if len(s.allowPhones) > 0 && !s.allowPhones[resolvedPhone] {
 		return
 	}
 
@@ -530,11 +530,17 @@ func (s *WASession) handleMessage(evt *events.Message) {
 		}
 	}
 
-	reply, err := s.callFlowise(ctx, text, senderPhone, uploads)
+	// Use resolvedPhone (not the raw LID) as the Flowise chatId. The agent
+	// prompt tries to read the customer's phone number straight from this
+	// value to auto-run customer_tier_lookup — a LID like "219464406679598"
+	// doesn't look like a phone number, so with the raw senderPhone the agent
+	// always fell back to asking the customer for their number even though
+	// go-wa already knew it.
+	reply, err := s.callFlowise(ctx, text, resolvedPhone, uploads)
 	if err != nil {
 		code := newErrorCode()
 		if ctx.Err() != nil {
-			fmt.Printf("[%s] [%s] timeout (%s)\n", s.name, code, senderPhone)
+			fmt.Printf("[%s] [%s] timeout (%s)\n", s.name, code, resolvedPhone)
 			reply = fmt.Sprintf("🔴 Server sedang sibuk, coba lagi nanti. (kode: %s)", code)
 		} else {
 			fmt.Printf("[%s] [%s] error (%s): %v\n", s.name, code, senderPhone, err)

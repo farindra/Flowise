@@ -4,6 +4,7 @@ import {
     Alert,
     Box,
     Chip,
+    CircularProgress,
     Dialog,
     DialogContent,
     DialogTitle,
@@ -48,6 +49,7 @@ const CampaignDetail = ({ id, open, onClose, onChanged }) => {
     const [statusFilter, setStatusFilter] = useState('')
     const [q, setQ] = useState('')
     const [error, setError] = useState('')
+    const [building, setBuilding] = useState(false)
     const pollRef = useRef(null)
 
     const loadCampaign = useCallback(async () => {
@@ -121,6 +123,34 @@ const CampaignDetail = ({ id, open, onClose, onChanged }) => {
         }
     }
 
+    // Builds the recipient list from the saved audience spec, then starts
+    // sending. Only valid for draft/ready — this REPLACES the recipient rows,
+    // which for a paused campaign would wipe its sent/failed history and risk
+    // re-sending to numbers it already reached. Paused must use resume().
+    const buildAndStart = async () => {
+        setError('')
+        setBuilding(true)
+        try {
+            const { data } = await broadcastApi.buildAudience(id)
+            for (;;) {
+                await new Promise((r) => setTimeout(r, 800))
+                const { data: job } = await broadcastApi.getBuildStatus(id, data.job_id)
+                if (job.status === 'done') {
+                    if (job.errors?.length) throw new Error(job.errors[0].error || 'gagal bangun audiens')
+                    break
+                }
+            }
+            await broadcastApi.startBroadcast(id)
+            await loadCampaign()
+            await loadRecipients()
+            onChanged?.()
+        } catch (e) {
+            setError(e.response?.data?.error || e.message)
+        } finally {
+            setBuilding(false)
+        }
+    }
+
     const doExport = async () => {
         try {
             const res = await broadcastApi.exportRecipients(id)
@@ -162,6 +192,17 @@ const CampaignDetail = ({ id, open, onClose, onChanged }) => {
                             <Chip size='small' label={campaign.status} color={campaign.status === 'running' ? 'primary' : 'default'} />
                             {campaign.dry_run && <Chip size='small' label='dry run' color='info' variant='outlined' />}
                             <Box sx={{ flex: 1 }} />
+                            {['draft', 'ready'].includes(campaign.status) && (
+                                <Chip
+                                    size='small'
+                                    color='primary'
+                                    label={building ? 'Membangun audiens...' : 'Bangun Audiens & Mulai'}
+                                    clickable={!building}
+                                    disabled={building}
+                                    icon={building ? <CircularProgress size={12} color='inherit' /> : <IconPlayerPlay size={14} />}
+                                    onClick={buildAndStart}
+                                />
+                            )}
                             {campaign.status === 'running' && (
                                 <Chip
                                     size='small'

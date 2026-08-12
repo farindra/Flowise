@@ -468,12 +468,18 @@ func handleGetBroadcast(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "broadcast tidak ditemukan", http.StatusNotFound)
 		return
 	}
-	b.Throttle = throttleToMap(mergeThrottle(b.Throttle))
-	jsonOK(w, b)
+	// `throttle` stays exactly as stored (just the user's overrides) so the
+	// edit form can be re-opened without silently discarding them.
+	// `effective_throttle` is what will actually run once merged with the
+	// current server defaults, for read-only display.
+	resp := map[string]any{}
+	raw, _ := json.Marshal(b)
+	_ = json.Unmarshal(raw, &resp)
+	resp["effective_throttle"] = throttleToMap(mergeThrottle(b.Throttle))
+	jsonOK(w, resp)
 }
 
-// throttleToMap exposes the *effective* settings, so the UI shows what will
-// actually happen rather than only the sparse overrides.
+// throttleToMap flattens a Throttle into a plain map for JSON responses.
 func throttleToMap(t Throttle) map[string]any {
 	raw, _ := json.Marshal(t)
 	out := map[string]any{}

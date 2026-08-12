@@ -31,7 +31,7 @@ import broadcastApi from '@/api/crmbroadcast'
 import AudiencePicker from './AudiencePicker'
 import ThrottleForm from './ThrottleForm'
 
-const STEPS = ['Pesan', 'Audiens', 'Pengaturan Kirim', 'Jadwal & Review']
+const STEPS = ['Pesan', 'Pengaturan Kirim', 'Audiens', 'Jadwal & Review']
 
 // Variables always available; upload columns add more at runtime.
 const BASE_VARS = ['nama', 'wilayah', 'tier']
@@ -75,7 +75,7 @@ const CampaignDialog = ({ open, campaign, onClose, onSaved }) => {
         setConfirmed(false)
         setMediaPreview('')
         if (campaign) {
-            setForm({ ...emptyForm, ...campaign, throttle: campaign.throttle_overrides || {} })
+            setForm({ ...emptyForm, ...campaign, throttle: campaign.throttle || {} })
             setScheduleMode(campaign.scheduled_at ? 'later' : 'now')
         } else {
             setForm(emptyForm)
@@ -275,20 +275,9 @@ const CampaignDialog = ({ open, campaign, onClose, onSaved }) => {
                     </Stack>
                 )}
 
-                {/* Step 2 — Audiens */}
+                {/* Step 2 — Pengaturan Kirim (must precede Audiens: cooldown_days here
+                    affects who the audience preview includes) */}
                 {step === 1 && (
-                    <AudiencePicker
-                        value={form.audience}
-                        onChange={(a) => patch({ audience: a })}
-                        includeBlacklist={form.include_blacklist}
-                        onIncludeBlacklistChange={(v) => patch({ include_blacklist: v })}
-                        allPhones={form.all_phones}
-                        onAllPhonesChange={(v) => patch({ all_phones: v })}
-                    />
-                )}
-
-                {/* Step 3 — Throttle */}
-                {step === 2 && (
                     <Stack spacing={2}>
                         <ThrottleForm
                             value={form.throttle}
@@ -308,6 +297,19 @@ const CampaignDialog = ({ open, campaign, onClose, onSaved }) => {
                             </Alert>
                         )}
                     </Stack>
+                )}
+
+                {/* Step 3 — Audiens */}
+                {step === 2 && (
+                    <AudiencePicker
+                        value={form.audience}
+                        onChange={(a) => patch({ audience: a })}
+                        includeBlacklist={form.include_blacklist}
+                        onIncludeBlacklistChange={(v) => patch({ include_blacklist: v })}
+                        allPhones={form.all_phones}
+                        onAllPhonesChange={(v) => patch({ all_phones: v })}
+                        throttle={form.throttle}
+                    />
                 )}
 
                 {/* Step 4 — Jadwal & review */}

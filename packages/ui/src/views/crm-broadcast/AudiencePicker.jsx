@@ -47,7 +47,7 @@ function formatDuration(seconds) {
     return `${h} jam ${m} menit`
 }
 
-const AudiencePicker = ({ value, onChange, includeBlacklist, onIncludeBlacklistChange, allPhones, onAllPhonesChange }) => {
+const AudiencePicker = ({ value, onChange, includeBlacklist, onIncludeBlacklistChange, allPhones, onAllPhonesChange, throttle }) => {
     const [wilayahOpts, setWilayahOpts] = useState([])
     const [chatSources, setChatSources] = useState([])
     const [preview, setPreview] = useState(null)
@@ -75,7 +75,12 @@ const AudiencePicker = ({ value, onChange, includeBlacklist, onIncludeBlacklistC
             const { data } = await broadcastApi.previewAudience({
                 audience: value,
                 include_blacklist: includeBlacklist,
-                all_phones: allPhones
+                all_phones: allPhones,
+                // Without this the preview always used the server default
+                // cooldown (7 days) even after the user set a different value
+                // in the throttle step — cooldown_days is the only throttle
+                // field that affects who gets included.
+                throttle
             })
             setPreview(data)
         } catch (e) {
@@ -84,7 +89,7 @@ const AudiencePicker = ({ value, onChange, includeBlacklist, onIncludeBlacklistC
         } finally {
             setPreviewing(false)
         }
-    }, [value, includeBlacklist, allPhones])
+    }, [value, includeBlacklist, allPhones, throttle])
 
     // Debounced so dragging the day slider doesn't fire a query per pixel.
     useEffect(() => {
@@ -413,7 +418,8 @@ AudiencePicker.propTypes = {
     includeBlacklist: PropTypes.bool,
     onIncludeBlacklistChange: PropTypes.func.isRequired,
     allPhones: PropTypes.bool,
-    onAllPhonesChange: PropTypes.func.isRequired
+    onAllPhonesChange: PropTypes.func.isRequired,
+    throttle: PropTypes.object
 }
 
 export default AudiencePicker

@@ -38,9 +38,9 @@ func main() {
 	port := envOr("PORT", "8083")
 
 	if v, err := strconv.ParseFloat(envOr("DEFAULT_MARKUP_PERCENT", "23"), 64); err == nil {
-		defaultMarkupPercent = v
+		unregisteredCustomerMarkup = v
 	}
-	log.Printf("default markup for unregistered customers: %.2f%%", defaultMarkupPercent)
+	log.Printf("unregistered customer markup: %.2f%%", unregisteredCustomerMarkup)
 
 	mux := http.NewServeMux()
 

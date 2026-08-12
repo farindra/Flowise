@@ -19,7 +19,7 @@ import {
     Tooltip,
     Typography
 } from '@mui/material'
-import { IconEye, IconPlayerPlay, IconPlus, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react'
+import { IconEdit, IconEye, IconPlayerPlay, IconPlus, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react'
 import MainCard from '@/ui-component/cards/MainCard'
 import broadcastApi from '@/api/crmbroadcast'
 import CampaignDialog from './CampaignDialog'
@@ -86,10 +86,27 @@ const CRMBroadcast = () => {
         setDialogOpen(true)
     }
 
+    const openEdit = async (row) => {
+        setError('')
+        try {
+            // Fetch fresh rather than reusing the list row: the list summary
+            // never carried the sender label / media info the form needs.
+            const { data } = await broadcastApi.getBroadcast(row.id)
+            setEditing(data)
+            setDialogOpen(true)
+        } catch (e) {
+            setError(e.response?.data?.error || e.message)
+        }
+    }
+
     const buildAndStart = async (row) => {
         setError('')
         try {
             // A campaign must have a materialized audience before it can run.
+            // Only for draft/ready: this REPLACES the recipient list, which
+            // would wipe a paused campaign's sent/failed history and risk
+            // re-sending to numbers it already reached. Paused campaigns must
+            // go through resumeBroadcast instead — see resumePaused().
             const { data } = await broadcastApi.buildAudience(row.id)
             const jobId = data.job_id
             for (;;) {
@@ -101,6 +118,16 @@ const CRMBroadcast = () => {
                 }
             }
             await broadcastApi.startBroadcast(row.id)
+            refresh()
+        } catch (e) {
+            setError(e.response?.data?.error || e.message)
+        }
+    }
+
+    const resumePaused = async (row) => {
+        setError('')
+        try {
+            await broadcastApi.resumeBroadcast(row.id)
             refresh()
         } catch (e) {
             setError(e.response?.data?.error || e.message)
@@ -214,6 +241,10 @@ const CRMBroadcast = () => {
                             const sent = c.sent || 0
                             const planned = sent + (c.failed || 0) + (c.uncertain || 0) + (c.pending || 0) + (c.sending || 0)
                             const pct = planned > 0 ? (sent / planned) * 100 : 0
+                            // A draft/ready campaign with zero rows at all hasn't had its
+                            // audience built yet — "0/0" reads as broken, so say that plainly
+                            // instead of drawing an empty progress bar.
+                            const audienceNotBuilt = Object.keys(c).length === 0 && ['draft', 'ready'].includes(row.status)
                             return (
                                 <TableRow key={row.id} hover>
                                     <TableCell>
@@ -231,12 +262,24 @@ const CRMBroadcast = () => {
                                         )}
                                     </TableCell>
                                     <TableCell sx={{ minWidth: 160 }}>
-                                        <LinearProgress variant='determinate' value={pct} sx={{ height: 6, borderRadius: 1, mb: 0.5 }} />
-                                        <Typography variant='caption' color='text.secondary'>
-                                            {sent}/{planned}
-                                            {(c.failed || 0) > 0 && ` · ${c.failed} gagal`}
-                                            {(c.skipped || 0) > 0 && ` · ${c.skipped} dilewati`}
-                                        </Typography>
+                                        {audienceNotBuilt ? (
+                                            <Typography variant='caption' color='text.secondary'>
+                                                Audiens belum dibangun
+                                            </Typography>
+                                        ) : (
+                                            <>
+                                                <LinearProgress
+                                                    variant='determinate'
+                                                    value={pct}
+                                                    sx={{ height: 6, borderRadius: 1, mb: 0.5 }}
+                                                />
+                                                <Typography variant='caption' color='text.secondary'>
+                                                    {sent}/{planned}
+                                                    {(c.failed || 0) > 0 && ` · ${c.failed} gagal`}
+                                                    {(c.skipped || 0) > 0 && ` · ${c.skipped} dilewati`}
+                                                </Typography>
+                                            </>
+                                        )}
                                     </TableCell>
                                     <TableCell sx={{ color: 'text.secondary' }}>
                                         {row.scheduled_at ? new Date(row.scheduled_at).toLocaleString('id-ID') : '—'}
@@ -252,12 +295,30 @@ const CRMBroadcast = () => {
                                                     <IconEye size={16} />
                                                 </IconButton>
                                             </Tooltip>
-                                            {['draft', 'ready', 'paused'].includes(row.status) && (
+                                            {['draft', 'ready', 'scheduled', 'paused'].includes(row.status) && (
+                                                <Tooltip title='Edit'>
+                                                    <IconButton size='small' sx={{ color: 'text.secondary' }} onClick={() => openEdit(row)}>
+                                                        <IconEdit size={16} />
+                                                    </IconButton>
+                                                </Tooltip>
+                                            )}
+                                            {['draft', 'ready'].includes(row.status) && (
                                                 <Tooltip title='Bangun audiens & jalankan'>
                                                     <IconButton
                                                         size='small'
                                                         sx={{ color: 'text.secondary' }}
                                                         onClick={() => buildAndStart(row)}
+                                                    >
+                                                        <IconPlayerPlay size={16} />
+                                                    </IconButton>
+                                                </Tooltip>
+                                            )}
+                                            {row.status === 'paused' && (
+                                                <Tooltip title='Lanjutkan (tanpa membangun ulang audiens)'>
+                                                    <IconButton
+                                                        size='small'
+                                                        sx={{ color: 'text.secondary' }}
+                                                        onClick={() => resumePaused(row)}
                                                     >
                                                         <IconPlayerPlay size={16} />
                                                     </IconButton>

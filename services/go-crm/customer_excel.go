@@ -170,8 +170,11 @@ func parseImportRow(rowNum int, row []string) *importRow {
 		return nil // blank trailing row
 	}
 	tier := strings.ToLower(get(3))
-	if tier != "vip" && tier != "blacklist" {
-		tier = "normal"
+	if tier != "vip" && tier != "blacklist" && tier != "normal" {
+		// "normal" (adj forced to 0) must be typed explicitly in the sheet to
+		// count — a blank/unrecognized cell defaults to unregistered (gets
+		// the markup), not silently exempt from it.
+		tier = TierUnregistered
 	}
 	pct, _ := strconv.ParseFloat(strings.TrimSuffix(get(4), "%"), 64)
 	return &importRow{
