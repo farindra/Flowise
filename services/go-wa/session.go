@@ -65,6 +65,12 @@ const (
 	rateLimitWindow        = 5 * time.Minute
 	rateLimitMaxMessages   = 25
 	rateLimitAlertCooldown = 30 * time.Minute
+
+	// pairingCodeValidity bounds how long the QR-refresh loop holds off
+	// reconnecting after a phone-pairing code is issued. WhatsApp's own
+	// pairing codes stay enterable for a few minutes; this is a safety
+	// upper bound, not the real code lifetime.
+	pairingCodeValidity = 3 * time.Minute
 )
 
 type sessionRateLimiter struct {
@@ -128,6 +134,11 @@ type WASession struct {
 	currentQR []byte
 	qrReady   chan struct{}
 	phone     string
+
+	// pairingInFlight is true while a phone-pairing code is outstanding and
+	// unconfirmed. The QR-refresh loop must not reconnect the socket during
+	// this window — see PairPhone and runQRFlow.
+	pairingInFlight bool
 
 	httpClient  *http.Client
 	rateLimiter *sessionRateLimiter
@@ -249,6 +260,25 @@ func (s *WASession) runQRFlow(ctx context.Context) {
 		if !timedOut {
 			return
 		}
+
+		// A phone-pairing code may be outstanding — disconnecting now would
+		// invalidate its ephemeral key (WA logs "pairing ref mismatch") and
+		// force the user to retry, burning through WhatsApp's own
+		// pairing-code rate limit. Wait for it to clear first.
+		for {
+			s.mu.RLock()
+			inFlight := s.pairingInFlight
+			s.mu.RUnlock()
+			if !inFlight {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+			}
+		}
+
 		s.waClient.Disconnect()
 		select {
 		case <-ctx.Done():
@@ -278,7 +308,21 @@ func (s *WASession) PairPhone(ctx context.Context, phone string) (string, error)
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-	return s.waClient.PairPhone(pairCtx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	code, err := s.waClient.PairPhone(pairCtx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	if err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	s.pairingInFlight = true
+	s.mu.Unlock()
+	time.AfterFunc(pairingCodeValidity, func() {
+		s.mu.Lock()
+		s.pairingInFlight = false
+		s.mu.Unlock()
+	})
+
+	return code, nil
 }
 
 func (s *WASession) QR() []byte {
